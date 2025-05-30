@@ -13,6 +13,7 @@ import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
 import json
+import random
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -23,10 +24,9 @@ from reportlab.lib.units import inch
 
 # Configuration de la page
 st.set_page_config(
-    page_title="🛒 Commande EPI",
-    page_icon="🛡️", 
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="🛒 Bienvenue dans Commande Articles et EPI",
+    page_icon="🛒",
+    layout="wide"
 )
 
 # Configuration pour production
@@ -186,7 +186,7 @@ if 'show_search' not in st.session_state:
     st.session_state.show_search = False
 
 # Configuration
-MAX_CART_AMOUNT = 800.0
+MAX_CART_AMOUNT = 1500.0  # Budget maximum autorisé
 
 # Force le rechargement CSS avec un timestamp
 css_version = int(time.time())
@@ -399,8 +399,54 @@ def add_to_cart(article):
     new_total = current_total + float(article['Prix'])
     
     if new_total > MAX_CART_AMOUNT:
-        st.error(f"❌ Impossible d'ajouter cet article. Le montant maximum de {MAX_CART_AMOUNT}€ serait dépassé!")
-        st.error(f"Total actuel: {current_total:.2f}€ - Prix article: {article['Prix']}€ - Nouveau total: {new_total:.2f}€")
+        # Messages rigolos aléatoires
+        messages_rigolos = [
+            "🤯 Eh mais tu vas bouffer la baraque !",
+            "😱 Stop ! Tu vas ruiner l'entreprise !",
+            "🚨 Alerte ! Le comptable va faire une crise cardiaque !",
+            "🤑 Calme-toi Jeff Bezos !",
+            "😵 Tu te crois à Disneyland ?!",
+            "🛑 Freine tes ardeurs champion !",
+            "💸 Tu veux pas acheter l'usine tant qu'on y est ?",
+            "🎯 C'est pas Koh Lanta ici !",
+            "🚫 Le patron va te passer un savon !",
+            "😂 Tu confonds avec ton compte perso ou quoi ?"
+        ]
+        
+        message_rigolo = random.choice(messages_rigolos)
+        
+        # Popup rigolo avec Streamlit
+        st.error(f"❌ {message_rigolo}")
+        st.error(f"💰 Budget maximum: {MAX_CART_AMOUNT}€")
+        st.error(f"🧮 Total actuel: {current_total:.2f}€ + Article: {article['Prix']}€ = {new_total:.2f}€")
+        
+        # Animation CSS pour le popup
+        st.markdown("""
+        <div style="
+            background: linear-gradient(45deg, #ff6b6b, #ffa500);
+            color: white;
+            padding: 1rem;
+            border-radius: 15px;
+            text-align: center;
+            margin: 1rem 0;
+            animation: shake 0.5s ease-in-out;
+            border: 3px solid #ff4757;
+        ">
+            <h3>🚨 BUDGET EXPLOSION DÉTECTÉE ! 🚨</h3>
+            <p>Redescends sur terre mon pote ! 😄</p>
+        </div>
+        
+        <style>
+        @keyframes shake {
+            0% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            50% { transform: translateX(5px); }
+            75% { transform: translateX(-5px); }
+            100% { transform: translateX(0); }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
     else:
         # Utiliser la fonction de conversion
         article_dict = convert_pandas_to_dict(article)
@@ -423,9 +469,51 @@ def add_multiple_to_cart(article, quantity):
     new_total = current_total + (article_price * quantity)
     
     if new_total > MAX_CART_AMOUNT:
-        st.error(f"❌ Impossible d'ajouter {quantity}x {article['Nom']}")
-        st.error(f"Cela dépasserait le budget de {MAX_CART_AMOUNT}€!")
-        st.error(f"Total actuel: {current_total:.2f}€ + {quantity}x{article_price}€ = {new_total:.2f}€")
+        # Messages encore plus rigolos pour les gros dépassements
+        messages_gros_depassement = [
+            f"🤯 {quantity}x ?! Tu veux ouvrir ton propre magasin ?!",
+            f"😱 {quantity} articles ! Tu te crois dans un supermarché ?",
+            f"🚨 {quantity}x ! Arrête le massacre !",
+            f"🤑 {quantity} pièces ! T'es millionnaire en secret ?",
+            f"😵 {quantity}x ! Le comptable vient de s'évanouir !",
+            f"🛑 {quantity} articles ! Tu collectionnes ou tu travailles ?",
+            f"💸 {quantity}x ! Tu veux ruiner la boîte !",
+            f"😂 {quantity} pièces ! C'est Noël en avance ?"
+        ]
+        
+        message_rigolo = random.choice(messages_gros_depassement)
+        
+        st.error(f"❌ {message_rigolo}")
+        st.error(f"💰 Budget maximum: {MAX_CART_AMOUNT}€")
+        st.error(f"🧮 Total actuel: {current_total:.2f}€ + {quantity}x{article_price}€ = {new_total:.2f}€")
+        
+        # Popup encore plus animé pour les gros dépassements
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(45deg, #ff4757, #ff3838);
+            color: white;
+            padding: 1.5rem;
+            border-radius: 20px;
+            text-align: center;
+            margin: 1rem 0;
+            animation: bounce 1s ease-in-out infinite;
+            border: 4px solid #ff1744;
+            box-shadow: 0 0 20px rgba(255, 23, 68, 0.5);
+        ">
+            <h2>🚨 ALERTE ROUGE ! 🚨</h2>
+            <h3>{quantity}x articles ! Sérieusement ?! 😅</h3>
+            <p>Reviens sur terre champion ! 🌍</p>
+        </div>
+        
+        <style>
+        @keyframes bounce {{
+            0%, 20%, 50%, 80%, 100% {{ transform: translateY(0); }}
+            40% {{ transform: translateY(-10px); }}
+            60% {{ transform: translateY(-5px); }}
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+        
     else:
         # Ajouter chaque article individuellement (pour le détail)
         article_dict = convert_pandas_to_dict(article)
@@ -468,8 +556,169 @@ def add_multiple_to_cart_optimized(article, quantity):
     st.success(f"✅ {quantity}x {article_dict['Nom']} ajoutés!")
     st.info(f"💰 Nouveau total : {new_total:.2f}€")
 
+# Ajouter les fonctions groupement JUSTE APRÈS add_multiple_to_cart()
+
+def group_articles_by_base_name(articles_df):
+    """Grouper les articles par nom de base (sans taille)"""
+    import re
+    grouped_articles = {}
+    
+    for idx, article in articles_df.iterrows():
+        # Extraire le nom de base (enlever les tailles courantes)
+        nom_original = article['Nom']
+        
+        # Patterns de tailles à enlever
+        taille_patterns = [
+            r'\s+Taille\s+\w+', r'\s+T\.\s*\w+', r'\s+Size\s+\w+',
+            r'\s+XS\b', r'\s+S\b', r'\s+M\b', r'\s+L\b', r'\s+XL\b', r'\s+XXL\b', r'\s+XXXL\b',
+            r'\s+\d+\b', r'\s+\d+/\d+\b'  # Tailles numériques
+        ]
+        
+        nom_base = nom_original
+        taille_detectee = ""
+        
+        # Détecter et extraire la taille
+        for pattern in taille_patterns:
+            match = re.search(pattern, nom_original, re.IGNORECASE)
+            if match:
+                taille_detectee = match.group().strip()
+                nom_base = re.sub(pattern, '', nom_original, flags=re.IGNORECASE).strip()
+                break
+        
+        # Si pas de taille détectée, garder tel quel
+        if not taille_detectee:
+            taille_detectee = "Unique"
+            nom_base = nom_original
+        
+        # Grouper
+        if nom_base not in grouped_articles:
+            grouped_articles[nom_base] = {
+                'nom_base': nom_base,
+                'categorie': article['Catégorie'],
+                'variants': []
+            }
+        
+        grouped_articles[nom_base]['variants'].append({
+            'taille': taille_detectee,
+            'prix': article['Prix'],
+            'nom_complet': nom_original,
+            'unite': article.get('Unité', 'unité'),
+            'article_original': article
+        })
+    
+    return grouped_articles
+
+def display_grouped_articles(category_articles):
+    """Afficher les articles groupés par nom de base"""
+    grouped = group_articles_by_base_name(category_articles)
+    
+    for nom_base, group_data in grouped.items():
+        variants = group_data['variants']
+        
+        # Si un seul variant, affichage normal
+        if len(variants) == 1:
+            variant = variants[0]
+            article = variant['article_original']
+            
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                padding: 1rem;
+                border-radius: 15px;
+                margin: 1rem 0;
+                color: white;
+                box-shadow: 0 5px 15px rgba(240, 147, 251, 0.3);
+            ">
+                <h4 style="margin: 0 0 0.5rem 0;">{variant['nom_complet']}</h4>
+                <p style="margin: 0; opacity: 0.9;">{variant['prix']}€ / {variant['unite']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Contrôles normaux
+            col_qty, col_btn = st.columns([1, 2])
+            
+            with col_qty:
+                qty_key = f"qty_{nom_base.replace(' ', '_')}"
+                quantity = st.number_input(
+                    "Quantité", 
+                    min_value=0, 
+                    max_value=50, 
+                    value=0,
+                    step=1,
+                    key=qty_key
+                )
+            
+            with col_btn:
+                if st.button(f"🛒 Ajouter au panier", key=f"add_{nom_base.replace(' ', '_')}"):
+                    if quantity > 0:
+                        add_multiple_to_cart(article, quantity)
+                    else:
+                        st.warning("⚠️ Veuillez sélectionner une quantité > 0")
+        
+        else:
+            # Multiples variants = affichage groupé
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 1rem;
+                border-radius: 15px;
+                margin: 1rem 0;
+                color: white;
+                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+            ">
+                <h4 style="margin: 0 0 0.5rem 0;">👕 {nom_base}</h4>
+                <p style="margin: 0; opacity: 0.9;">📏 {len(variants)} tailles disponibles</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Sélection de taille et quantité
+            col_size, col_qty, col_btn = st.columns([2, 1, 2])
+            
+            with col_size:
+                taille_options = [f"{v['taille']} - {v['prix']}€" for v in variants]
+                taille_selectionnee = st.selectbox(
+                    "Choisir taille",
+                    taille_options,
+                    key=f"size_{nom_base.replace(' ', '_')}"
+                )
+                
+                # Retrouver le variant sélectionné
+                selected_variant = None
+                for v in variants:
+                    if f"{v['taille']} - {v['prix']}€" == taille_selectionnee:
+                        selected_variant = v
+                        break
+            
+            with col_qty:
+                quantity = st.number_input(
+                    "Quantité",
+                    min_value=0,
+                    max_value=50,
+                    value=0,
+                    step=1,
+                    key=f"qty_grouped_{nom_base.replace(' ', '_')}"
+                )
+            
+            with col_btn:
+                if st.button(f"🛒 Ajouter", key=f"add_grouped_{nom_base.replace(' ', '_')}"):
+                    if quantity > 0 and selected_variant:
+                        add_multiple_to_cart(selected_variant['article_original'], quantity)
+                    else:
+                        st.warning("⚠️ Sélectionnez une taille et une quantité > 0")
+
 # Fonctions PDF et Email
-def generate_pdf():
+def generate_pdfs():
+    """Générer 2 PDFs : commande + réception"""
+    # PDF 1 : Commande (pour commanditaire)
+    buffer_commande = generate_pdf_commande()
+    
+    # PDF 2 : Réception (pour réceptionnaire) 
+    buffer_reception = generate_pdf_reception()
+    
+    return buffer_commande, buffer_reception
+
+def generate_pdf_commande():
+    """PDF pour la personne qui passe commande"""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
@@ -477,7 +726,7 @@ def generate_pdf():
     
     # Titre principal
     title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, spaceAfter=30, alignment=1)
-    title = Paragraph("🛒 COMMANDE D'ÉQUIPEMENTS DE PROTECTION INDIVIDUELLE", title_style)
+    title = Paragraph("🛒 COMMANDE D'ÉQUIPEMENTS DE PROTECTION", title_style)
     story.append(title)
     
     # Informations équipe
@@ -500,17 +749,25 @@ def generate_pdf():
     story.append(date_text)
     story.append(Spacer(1, 20))
     
-    # Tableau des articles (reste identique)
+    # Tableau des articles NORMAL
     data = [['Article', 'Catégorie', 'Prix (€)', 'Unité']]
     total = 0
     
     for item in st.session_state.cart:
-        data.append([str(item['Nom']), str(item['Catégorie']), f"{item['Prix']:.2f}", str(item['Unité'])])
-        total += float(item['Prix'])
+        price = float(item['Prix'])
+        data.append([
+            item['Nom'],
+            item['Catégorie'],
+            f"{price:.2f}",
+            item.get('Unité', 'unité')
+        ])
+        total += price
     
+    # Ligne total
     data.append(['', '', f"TOTAL: {total:.2f}€", ''])
     
-    table = Table(data, colWidths=[3*inch, 1.5*inch, 1*inch, 1*inch])
+    # Style du tableau
+    table = Table(data)
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -526,15 +783,107 @@ def generate_pdf():
     
     story.append(table)
     doc.build(story)
+    
+    buffer.seek(0)
+    return buffer
+
+def generate_pdf_reception():
+    """PDF pour la personne qui réceptionne (avec checkboxes)"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+    
+    # Titre principal SANS carrés noirs
+    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, spaceAfter=30, alignment=1)
+    title = Paragraph("BON DE RÉCEPTION - ÉQUIPEMENTS EPI", title_style)
+    story.append(title)
+    
+    # Informations équipe
+    if hasattr(st.session_state, 'contremaître') or hasattr(st.session_state, 'equipe'):
+        info_style = ParagraphStyle('InfoStyle', parent=styles['Normal'], fontSize=12, alignment=1, spaceAfter=20)
+        
+        info_text = []
+        if hasattr(st.session_state, 'contremaître') and st.session_state.contremaître:
+            info_text.append(f"Contremaître: {st.session_state.contremaître}")
+        if hasattr(st.session_state, 'equipe') and st.session_state.equipe:
+            info_text.append(f"Équipe: {st.session_state.equipe}")
+        
+        if info_text:
+            info_paragraph = Paragraph("<br/>".join(info_text), info_style)
+            story.append(info_paragraph)
+    
+    # Date 
+    date_style = ParagraphStyle('DateStyle', parent=styles['Normal'], fontSize=12, alignment=1)
+    date_text = Paragraph(f"Date commande: {datetime.now().strftime('%d/%m/%Y %H:%M')}", date_style)
+    story.append(date_text)
+    story.append(Spacer(1, 20))
+    
+    # Instructions SANS carrés noirs
+    instruction_style = ParagraphStyle('InstructionStyle', parent=styles['Normal'], fontSize=14, alignment=1, spaceAfter=20)
+    instruction = Paragraph("<b>INSTRUCTIONS:</b> Cochez les cases lors de la réception des articles", instruction_style)
+    story.append(instruction)
+    story.append(Spacer(1, 20))
+    
+    # Tableau SIMPLE sans symboles
+    data = [['Coché', 'Article', 'Catégorie', 'Prix (€)', 'Quantité', 'Reçu']]
+    total = 0
+    
+    for item in st.session_state.cart:
+        price = float(item['Prix'])
+        data.append([
+            '',  # Colonne vide pour cocher
+            item['Nom'],
+            item['Catégorie'], 
+            f"{price:.2f}",
+            '1',
+            ''   # Colonne vide pour "Reçu"
+        ])
+        total += price
+    
+    # Ligne total
+    data.append(['', '', '', f"TOTAL: {total:.2f}€", '', ''])
+    
+    # Style du tableau
+    table = Table(data)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -2), colors.lightblue),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.lightgreen),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 2, colors.black)
+    ]))
+    
+    story.append(table)
+    story.append(Spacer(1, 30))
+    
+    # Section signature SANS carrés noirs
+    signature_style = ParagraphStyle('SignatureStyle', parent=styles['Normal'], fontSize=12, spaceAfter=10)
+    
+    story.append(Paragraph("<b>RÉCEPTION EFFECTUÉE PAR:</b>", signature_style))
+    story.append(Spacer(1, 20))
+    story.append(Paragraph("Nom: ________________________________", signature_style))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("Date: ________________________________", signature_style))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("Signature: ________________________________", signature_style))
+    
+    doc.build(story)
+    
     buffer.seek(0)
     return buffer
 
 # En-tête principal
 st.markdown("""
 <div class="main-header">
-    <h1 style="color: white; font-weight: 800; font-size: 2.2rem; margin-bottom: 0.5rem; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">🛒 Commande EPI - Recherche d'Articles</h1>
+    <h1 style="color: white; font-weight: 800; font-size: 2.2rem; margin-bottom: 0.5rem; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">🛒 Bienvenue dans Commande Articles et EPI</h1>
     <p style="text-align: center; color: white; font-family: 'Inter', sans-serif; margin: 0; font-size: 1.2rem; font-weight: 500;">
-        🛡️ Catalogue moderne et intuitif d'équipements de protection
+        🛡️ **Votre solution complète pour les équipements de protection individuelle**
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -678,42 +1027,34 @@ with st.sidebar:
         if st.session_state.cart:
             st.markdown("### 📋 Finaliser la commande")
             
-            # Bouton PDF unique et simple
-            if st.button("📄 Générer PDF", key="generate_pdf", type="primary"):
-                pdf_buffer = generate_pdf()
-                
-                # Sauvegarder en base de données
-                contremaître_info = getattr(st.session_state, 'contremaître', 'Non spécifié')
-                equipe_info = getattr(st.session_state, 'equipe', 'Non spécifiée')
-                total = calculate_cart_total()
-                
-                commande_id = save_commande_to_db(
-                    contremaître_info, 
-                    equipe_info, 
-                    st.session_state.cart, 
-                    total
-                )
-                
-                st.success(f"✅ Commande #{commande_id} sauvegardée !")
-                
-                # Téléchargement PDF
-                st.download_button(
-                    label="💾 Télécharger le PDF",
-                    data=pdf_buffer,
-                    file_name=f"commande_epi_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf",
-                    type="secondary"
-                )
-                
-                # Option pour vider le panier
-                col_clear1, col_clear2 = st.columns(2)
-                with col_clear1:
-                    if st.button("🗑️ Vider le panier", key="clear_after_pdf"):
-                        clear_cart()
-                        st.rerun()
-                
-                with col_clear2:
-                    st.markdown("💡 *PDF généré ! Vous pouvez l'envoyer par email manuellement.*")
+            # Boutons PDF
+            col_pdf1, col_pdf2 = st.columns(2)
+            
+            with col_pdf1:
+                if st.button("📄 PDF Commande", help="Pour le commanditaire"):
+                    try:
+                        pdf_commande = generate_pdf_commande()
+                        st.download_button(
+                            label="📥 Télécharger Commande",
+                            data=pdf_commande,
+                            file_name=f"commande_epi_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Erreur génération PDF commande : {str(e)}")
+            
+            with col_pdf2:
+                if st.button("✅ PDF Réception", help="Pour le réceptionnaire"):
+                    try:
+                        pdf_reception = generate_pdf_reception()
+                        st.download_button(
+                            label="📥 Télécharger Réception",
+                            data=pdf_reception,
+                            file_name=f"reception_epi_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Erreur génération PDF réception : {str(e)}")
     else:
         st.markdown("""
         <div style="text-align: center; padding: 2rem; color: #718096; font-family: 'Poppins', sans-serif;">
@@ -833,6 +1174,19 @@ with col1:
             category = st.session_state.selected_category
             category_articles = articles_df[articles_df['Catégorie'] == category]
             
+            # BOUTON RETOUR EN HAUT - TRÈS VISIBLE 🔝
+            st.markdown("""
+            <div style="background: #f0f0f0; padding: 1rem; border-radius: 10px; margin-bottom: 1rem; text-align: center;">
+            """, unsafe_allow_html=True)
+            
+            if st.button("🏠 ⬅️ RETOUR AUX CATÉGORIES", key="back_to_categories_top", 
+                       type="primary", help="Cliquez pour retourner aux catégories"):
+                st.session_state.selected_category = None
+                st.session_state.show_search = False
+                st.rerun()
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+            
             st.markdown(f"""
             <div style="text-align: center; margin: 2rem 0;">
                 <h2 style="color: #2d3748; font-family: 'Poppins', sans-serif; font-weight: 600; margin-bottom: 0.5rem;">
@@ -844,58 +1198,8 @@ with col1:
             </div>
             """, unsafe_allow_html=True)
             
-            # Afficher les articles sans imbrication de colonnes
-            for idx, article in category_articles.iterrows():
-                # Article card complet
-                st.markdown(f"""
-                <div style="
-                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-                    padding: 1rem;
-                    border-radius: 15px;
-                    margin: 1rem 0;
-                    color: white;
-                    box-shadow: 0 5px 15px rgba(240, 147, 251, 0.3);
-                ">
-                    <h4 style="margin: 0 0 0.5rem 0;">{article['Nom']}</h4>
-                    <p style="margin: 0; opacity: 0.9;">{article['Prix']}€ / {article.get('Unité', 'unité')}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Contrôles sous la card
-                col_qty, col_btn = st.columns([1, 2])
-                
-                with col_qty:
-                    qty_key = f"qty_{idx}_{article['Nom']}"
-                    quantity = st.number_input(
-                        "Quantité", 
-                        min_value=0, 
-                        max_value=50, 
-                        value=0,
-                        step=1,
-                        key=qty_key
-                    )
-                
-                with col_btn:
-                    if st.button(f"🛒 Ajouter {quantity if quantity > 0 else ''} au panier", 
-                                key=f"add_{idx}_{article['Nom']}"):
-                        if quantity > 0:
-                            add_multiple_to_cart(article, quantity)
-                        else:
-                            st.warning("⚠️ Veuillez sélectionner une quantité > 0")
-        
-        # Boutons de navigation pour le catalogue
-        st.markdown("---")
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("🔍 Recherche avancée", key="toggle_search"):
-                st.session_state.show_search = not st.session_state.show_search
-                st.rerun()
-        
-        with col_nav2:
-            if st.button("🏠 Retour aux catégories", key="back_to_categories"):
-                st.session_state.selected_category = None
-                st.session_state.show_search = False
-                st.rerun()
+            # AFFICHAGE GROUPÉ DES ARTICLES
+            display_grouped_articles(category_articles)
 
     elif page == "📊 Historique":
         st.markdown("""
