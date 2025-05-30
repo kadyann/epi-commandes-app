@@ -30,19 +30,21 @@ st.set_page_config(
     layout="wide"
 )
 
-# Configuration pour Railway avec volume persistant
-if 'RAILWAY_ENVIRONMENT' in os.environ:
-    # Production Railway avec volume persistant
-    DATABASE_PATH = '/data/commandes.db'
+# Configuration base de données (nettoyer la logique)
+if 'DATABASE_URL' in os.environ:
+    # Production Railway avec PostgreSQL
+    DATABASE_URL = os.environ['DATABASE_URL']
+    USE_POSTGRESQL = True
 else:
-    # Développement local
+    # Développement local avec SQLite
     DATABASE_PATH = 'commandes.db'
+    USE_POSTGRESQL = False
 
-# === FONCTIONS BASE DE DONNÉES (À PLACER EN PREMIER) ===
+# === FONCTIONS BASE DE DONNÉES CORRIGÉES ===
 
 def init_database():
     """Créer la base de données et les tables"""
-    if 'DATABASE_URL' in os.environ:
+    if USE_POSTGRESQL:
         # PostgreSQL (Railway)
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
@@ -84,7 +86,7 @@ def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
     """Sauvegarder une commande dans la base de données"""
     import pandas as pd
     
-    if 'DATABASE_URL' in os.environ:
+    if USE_POSTGRESQL:
         # PostgreSQL (Railway)
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
@@ -125,15 +127,15 @@ def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
     date_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     nb_articles = len(cart_safe)
     
-    if 'DATABASE_URL' in os.environ:
-        # PostgreSQL - Syntaxe différente
+    if USE_POSTGRESQL:
+        # PostgreSQL - Syntaxe %s et RETURNING
         cursor.execute('''
             INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
             VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
         ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
         commande_id = cursor.fetchone()[0]
     else:
-        # SQLite
+        # SQLite - Syntaxe ? et lastrowid
         cursor.execute('''
             INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -147,7 +149,7 @@ def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
 
 def get_all_commandes():
     """Récupérer toutes les commandes"""
-    if 'DATABASE_URL' in os.environ:
+    if USE_POSTGRESQL:
         # PostgreSQL
         conn = psycopg2.connect(DATABASE_URL)
     else:
@@ -1473,3 +1475,35 @@ with col1:
                 
         except Exception as e:
             st.error(f"❌ Erreur lors du calcul des statistiques : {str(e)}")
+
+# Ajouter une fonction de test (temporaire)
+def test_database_connection():
+    """Tester la connexion à la base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT version();")
+            version = cursor.fetchone()
+            conn.close()
+            return f"✅ PostgreSQL connecté: {version[0][:50]}..."
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT sqlite_version();")
+            version = cursor.fetchone()
+            conn.close()
+            return f"✅ SQLite connecté: {version[0]}"
+    except Exception as e:
+        return f"❌ Erreur connexion: {str(e)}"
+
+# Dans votre sidebar, ajouter temporairement :
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("### 🔧 Debug")
+    if st.button("🗄️ Test DB"):
+        result = test_database_connection()
+        if "✅" in result:
+            st.success(result)
+        else:
+            st.error(result)
