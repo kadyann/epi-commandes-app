@@ -14,6 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import random
+import psycopg2
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -29,43 +30,68 @@ st.set_page_config(
     layout="wide"
 )
 
-# Configuration pour production
-if 'PORT' in os.environ:
-    # Mode production
-    DATABASE_PATH = '/app/commandes.db'
+# Configuration pour Railway avec volume persistant
+if 'RAILWAY_ENVIRONMENT' in os.environ:
+    # Production Railway avec volume persistant
+    DATABASE_PATH = '/data/commandes.db'
 else:
-    # Mode développement
+    # Développement local
     DATABASE_PATH = 'commandes.db'
 
 # === FONCTIONS BASE DE DONNÉES (À PLACER EN PREMIER) ===
 
 def init_database():
-    """Créer la base de données et les tables si elles n'existent pas"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS commandes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            contremaître TEXT NOT NULL,
-            equipe TEXT NOT NULL,
-            articles_json TEXT NOT NULL,
-            total_prix REAL NOT NULL,
-            nb_articles INTEGER NOT NULL,
-            statut TEXT DEFAULT 'validée'
-        )
-    ''')
+    """Créer la base de données et les tables"""
+    if 'DATABASE_URL' in os.environ:
+        # PostgreSQL (Railway)
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS commandes (
+                id SERIAL PRIMARY KEY,
+                date TEXT NOT NULL,
+                contremaître TEXT NOT NULL,
+                equipe TEXT NOT NULL,
+                articles_json TEXT NOT NULL,
+                total_prix REAL NOT NULL,
+                nb_articles INTEGER NOT NULL,
+                statut TEXT DEFAULT 'validée'
+            )
+        ''')
+    else:
+        # SQLite (Local)
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS commandes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                contremaître TEXT NOT NULL,
+                equipe TEXT NOT NULL,
+                articles_json TEXT NOT NULL,
+                total_prix REAL NOT NULL,
+                nb_articles INTEGER NOT NULL,
+                statut TEXT DEFAULT 'validée'
+            )
+        ''')
     
     conn.commit()
     conn.close()
 
 def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
     """Sauvegarder une commande dans la base de données"""
-    import pandas as pd  # Assurer l'import
+    import pandas as pd
     
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
+    if 'DATABASE_URL' in os.environ:
+        # PostgreSQL (Railway)
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+    else:
+        # SQLite (Local)
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
     
     # Conversion ultra-sûre des articles
     cart_safe = []
@@ -73,17 +99,15 @@ def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
         item_safe = {}
         for key, value in item.items():
             try:
-                # Essayer de convertir en type Python natif
                 if value is None or (hasattr(pd, 'isna') and pd.isna(value)):
                     item_safe[key] = ""
                 elif isinstance(value, (str, int, float, bool)):
                     item_safe[key] = value
-                elif hasattr(value, 'item'):  # numpy/pandas scalaires
+                elif hasattr(value, 'item'):
                     item_safe[key] = value.item()
                 else:
                     item_safe[key] = str(value)
                     
-                # Force conversion du prix en float
                 if key == 'Prix':
                     item_safe[key] = float(item_safe[key])
                     
@@ -92,83 +116,97 @@ def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
         
         cart_safe.append(item_safe)
     
-    # Sérialisation JSON sécurisée
+    # Sérialisation JSON
     try:
         articles_json = json.dumps(cart_safe, ensure_ascii=False, default=str)
     except Exception as e:
-        # Si ça échoue encore, forcer la conversion en string
         articles_json = json.dumps(str(cart_safe), ensure_ascii=False)
     
     date_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     nb_articles = len(cart_safe)
     
-    cursor.execute('''
-        INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
+    if 'DATABASE_URL' in os.environ:
+        # PostgreSQL - Syntaxe différente
+        cursor.execute('''
+            INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
+        commande_id = cursor.fetchone()[0]
+    else:
+        # SQLite
+        cursor.execute('''
+            INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
+        commande_id = cursor.lastrowid
     
     conn.commit()
     conn.close()
     
-    return cursor.lastrowid
+    return commande_id
 
 def get_all_commandes():
     """Récupérer toutes les commandes"""
-    conn = sqlite3.connect(DATABASE_PATH)
+    if 'DATABASE_URL' in os.environ:
+        # PostgreSQL
+        conn = psycopg2.connect(DATABASE_URL)
+    else:
+        # SQLite
+        conn = sqlite3.connect(DATABASE_PATH)
+    
     df = pd.read_sql_query("SELECT * FROM commandes ORDER BY date DESC", conn)
     conn.close()
     return df
 
 def get_statistics():
     """Calculer les statistiques des commandes"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    
-    # Statistiques générales
-    stats = {}
-    
-    # Total commandes
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM commandes")
-    stats['total_commandes'] = cursor.fetchone()[0]
-    
-    # Total dépensé
-    cursor.execute("SELECT SUM(total_prix) FROM commandes")
-    result = cursor.fetchone()[0]
-    stats['total_depense'] = result if result else 0
-    
-    # Commandes par équipe
-    df_equipes = pd.read_sql_query("""
-        SELECT equipe, COUNT(*) as nb_commandes, SUM(total_prix) as total_prix
-        FROM commandes 
-        GROUP BY equipe 
-        ORDER BY total_prix DESC
-    """, conn)
-    
-    # Commandes par contremaître
-    df_contremaitres = pd.read_sql_query("""
-        SELECT contremaître, COUNT(*) as nb_commandes, SUM(total_prix) as total_prix
-        FROM commandes 
-        GROUP BY contremaître 
-        ORDER BY total_prix DESC
-    """, conn)
-    
-    # Évolution mensuelle
-    df_mensuel = pd.read_sql_query("""
-        SELECT strftime('%Y-%m', date) as mois, 
-               COUNT(*) as nb_commandes, 
-               SUM(total_prix) as total_prix
-        FROM commandes 
-        GROUP BY strftime('%Y-%m', date) 
-        ORDER BY mois
-    """, conn)
-    
-    conn.close()
-    
-    stats['df_equipes'] = df_equipes
-    stats['df_contremaitres'] = df_contremaitres  
-    stats['df_mensuel'] = df_mensuel
-    
-    return stats
+    try:
+        df_commandes = get_all_commandes()
+        
+        if len(df_commandes) == 0:
+            return {
+                'total_commandes': 0,
+                'total_depense': 0,
+                'df_equipes': pd.DataFrame(),
+                'df_contremaitres': pd.DataFrame(),
+                'df_mensuel': pd.DataFrame()
+            }
+        
+        # Statistiques globales
+        total_commandes = len(df_commandes)
+        total_depense = df_commandes['total_prix'].sum()
+        
+        # Groupement par équipe
+        df_equipes = df_commandes.groupby('equipe')['total_prix'].agg(['sum', 'count']).reset_index()
+        df_equipes.columns = ['equipe', 'total_prix', 'nb_commandes']
+        df_equipes = df_equipes.sort_values('total_prix', ascending=False)
+        
+        # Groupement par contremaître
+        df_contremaitres = df_commandes.groupby('contremaître')['total_prix'].agg(['sum', 'count']).reset_index()
+        df_contremaitres.columns = ['contremaître', 'total_prix', 'nb_commandes']
+        df_contremaitres = df_contremaitres.sort_values('total_prix', ascending=False)
+        
+        # Évolution mensuelle
+        df_commandes['mois'] = pd.to_datetime(df_commandes['date']).dt.to_period('M')
+        df_mensuel = df_commandes.groupby('mois')['total_prix'].sum().reset_index()
+        df_mensuel['mois'] = df_mensuel['mois'].astype(str)
+        
+        return {
+            'total_commandes': total_commandes,
+            'total_depense': total_depense,
+            'df_equipes': df_equipes,
+            'df_contremaitres': df_contremaitres,
+            'df_mensuel': df_mensuel
+        }
+        
+    except Exception as e:
+        return {
+            'total_commandes': 0,
+            'total_depense': 0,
+            'df_equipes': pd.DataFrame(),
+            'df_contremaitres': pd.DataFrame(), 
+            'df_mensuel': pd.DataFrame()
+        }
 
 # Initialiser la base de données au démarrage
 init_database()
@@ -1031,30 +1069,54 @@ with st.sidebar:
             col_pdf1, col_pdf2 = st.columns(2)
             
             with col_pdf1:
-                if st.button("📄 PDF Commande", help="Pour le commanditaire"):
-                    try:
-                        pdf_commande = generate_pdf_commande()
-                        st.download_button(
-                            label="📥 Télécharger Commande",
-                            data=pdf_commande,
-                            file_name=f"commande_epi_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                            mime="application/pdf"
-                        )
-                    except Exception as e:
-                        st.error(f"❌ Erreur génération PDF commande : {str(e)}")
+                if st.button("📄 Générer PDF Commande", type="primary"):
+                    if st.session_state.contremaître and st.session_state.equipe:
+                        try:
+                            # Générer le PDF
+                            pdf_buffer = generate_pdf_commande()
+                            
+                            # 🆕 ENREGISTRER DANS LA BASE DE DONNÉES
+                            total_prix = calculate_cart_total()
+                            commande_id = save_commande_to_db(
+                                st.session_state.contremaître,
+                                st.session_state.equipe, 
+                                st.session_state.cart,
+                                total_prix
+                            )
+                            
+                            # Téléchargement du PDF
+                            st.download_button(
+                                label="⬇️ Télécharger le PDF",
+                                data=pdf_buffer.getvalue(),
+                                file_name=f"commande_{st.session_state.contremaître}_{st.session_state.equipe}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                                mime="application/pdf"
+                            )
+                            
+                            st.success(f"✅ PDF généré et commande #{commande_id} enregistrée !")
+                            st.info("💡 Vous pouvez maintenant vider le panier ou continuer vos achats")
+                            
+                        except Exception as e:
+                            st.error(f"❌ Erreur lors de la génération : {str(e)}")
+                    else:
+                        st.warning("⚠️ Veuillez remplir le contremaître et l'équipe avant de générer le PDF")
             
             with col_pdf2:
-                if st.button("✅ PDF Réception", help="Pour le réceptionnaire"):
-                    try:
-                        pdf_reception = generate_pdf_reception()
-                        st.download_button(
-                            label="📥 Télécharger Réception",
-                            data=pdf_reception,
-                            file_name=f"reception_epi_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                            mime="application/pdf"
-                        )
-                    except Exception as e:
-                        st.error(f"❌ Erreur génération PDF réception : {str(e)}")
+                if st.button("📋 Générer PDF Réception", type="secondary"):
+                    if st.session_state.contremaître and st.session_state.equipe:
+                        try:
+                            # Générer le PDF de réception
+                            pdf_buffer = generate_pdf_reception()
+                            
+                            # Téléchargement (pas besoin de re-sauvegarder si déjà fait pour la commande)
+                            st.download_button(
+                                label="⬇️ Télécharger PDF Réception",
+                                data=pdf_buffer.getvalue(),
+                                file_name=f"reception_{st.session_state.contremaître}_{st.session_state.equipe}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                                mime="application/pdf"
+                            )
+                            
+                        except Exception as e:
+                            st.error(f"❌ Erreur : {str(e)}")
     else:
         st.markdown("""
         <div style="text-align: center; padding: 2rem; color: #718096; font-family: 'Poppins', sans-serif;">
