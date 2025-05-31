@@ -417,41 +417,43 @@ def init_users_db():
 def authenticate_user(username, password):
     """Authentifie un utilisateur"""
     try:
+        # Hasher le mot de passe fourni
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT username, password, role, equipe, fonction, email 
-                FROM users WHERE username = %s
-            """, (username,))
+                SELECT id, username, role, equipe, fonction 
+                FROM users 
+                WHERE username = %s AND password = %s
+            """, (username.strip(), password_hash))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT username, password, role, equipe, fonction, email 
-                FROM users WHERE username = ?
-            """, (username,))
+                SELECT id, username, role, equipe, fonction 
+                FROM users 
+                WHERE username = ? AND password = ?
+            """, (username.strip(), password_hash))
         
         result = cursor.fetchone()
         conn.close()
         
         if result:
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
-            if password_hash == result[1]:
-                st.session_state.current_user = {
-                    'username': result[0],
-                    'role': result[2],
-                    'equipe': result[3] or '',
-                    'fonction': result[4] or '',
-                    'email': result[5] or ''
-                }
-                return True
+            return {
+                'id': result[0],
+                'username': result[1],
+                'role': result[2] or 'user',  # Défaut à 'user' si NULL
+                'equipe': result[3],
+                'fonction': result[4]
+            }
         
-        return False
+        return None
         
     except Exception as e:
         st.error(f"Erreur authentification: {e}")
-        return False
+        return None
 
 def add_user(username, password, role='user', equipe='', fonction='', email=''):
     """Ajoute un nouvel utilisateur"""
@@ -665,28 +667,34 @@ def show_login():
     st.markdown("### 🔐 Connexion FLUX/PARA")
     
     with st.form("login_form"):
-        username = st.text_input("👨‍💼 Nom d'utilisateur")
-        password = st.text_input("🔑 Mot de passe", type="password")
+        username = st.text_input("👤 Nom d'utilisateur")
+        password = st.text_input("🔒 Mot de passe", type="password")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.form_submit_button("🚀 Se connecter", use_container_width=True):
-                if username and password:
-                    if authenticate_user(username, password):
+            if st.form_submit_button("🔐 Se connecter", use_container_width=True):
+                if not username or not password:
+                    st.error("❌ Veuillez remplir tous les champs")
+                else:
+                    user_info = authenticate_user(username, password)
+                    if user_info:
                         st.session_state.authenticated = True
+                        st.session_state.current_user = user_info
                         st.session_state.page = "catalogue"
-                        st.success(f"✅ Connexion réussie ! Bienvenue {username}")
+                        st.success(f"✅ Connexion réussie ! Bienvenue {user_info['username']}")
+                        time.sleep(1)
                         st.rerun()
                     else:
                         st.error("❌ Identifiants incorrects")
-                else:
-                    st.error("⚠️ Veuillez remplir tous les champs")
         
         with col2:
             if st.form_submit_button("📝 Créer un compte", use_container_width=True):
                 st.session_state.page = "register"
                 st.rerun()
+    
+    # Afficher les comptes de test
+    st.info("💡 **Compte administrateur de test :**\n- Utilisateur: `admin`\n- Mot de passe: `admin123`")
 
 def show_register():
     """Page d'inscription"""
