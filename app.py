@@ -15,6 +15,9 @@ import plotly.graph_objects as go
 import json
 import random
 import psycopg2
+import base64
+import re
+import hashlib
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -25,1485 +28,2808 @@ from reportlab.lib.units import inch
 
 # Configuration de la page
 st.set_page_config(
-    page_title="🛒 Bienvenue dans Commande Articles et EPI",
-    page_icon="🛒",
-    layout="wide"
+    page_title="FLUX/PARA Commander",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Configuration base de données (nettoyer la logique)
+# === VARIABLES GLOBALES ===
+MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
+
+# Configuration base de données
 if 'DATABASE_URL' in os.environ:
-    # Production Railway avec PostgreSQL
     DATABASE_URL = os.environ['DATABASE_URL']
     USE_POSTGRESQL = True
 else:
-    # Développement local avec SQLite
     DATABASE_PATH = 'commandes.db'
     USE_POSTGRESQL = False
 
-# === FONCTIONS BASE DE DONNÉES CORRIGÉES ===
-
-def init_database():
-    """Créer la base de données et les tables"""
-    if USE_POSTGRESQL:
-        # PostgreSQL (Railway)
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS commandes (
-                id SERIAL PRIMARY KEY,
-                date TEXT NOT NULL,
-                contremaître TEXT NOT NULL,
-                equipe TEXT NOT NULL,
-                articles_json TEXT NOT NULL,
-                total_prix REAL NOT NULL,
-                nb_articles INTEGER NOT NULL,
-                statut TEXT DEFAULT 'validée'
-            )
-        ''')
-    else:
-        # SQLite (Local)
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS commandes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                contremaître TEXT NOT NULL,
-                equipe TEXT NOT NULL,
-                articles_json TEXT NOT NULL,
-                total_prix REAL NOT NULL,
-                nb_articles INTEGER NOT NULL,
-                statut TEXT DEFAULT 'validée'
-            )
-        ''')
-    
-    conn.commit()
-    conn.close()
-
-def save_commande_to_db(contremaître, equipe, cart_items, total_prix):
-    """Sauvegarder une commande dans la base de données"""
-    import pandas as pd
-    
-    if USE_POSTGRESQL:
-        # PostgreSQL (Railway)
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-    else:
-        # SQLite (Local)
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-    
-    # Conversion ultra-sûre des articles
-    cart_safe = []
-    for item in cart_items:
-        item_safe = {}
-        for key, value in item.items():
-            try:
-                if value is None or (hasattr(pd, 'isna') and pd.isna(value)):
-                    item_safe[key] = ""
-                elif isinstance(value, (str, int, float, bool)):
-                    item_safe[key] = value
-                elif hasattr(value, 'item'):
-                    item_safe[key] = value.item()
-                else:
-                    item_safe[key] = str(value)
-                    
-                if key == 'Prix':
-                    item_safe[key] = float(item_safe[key])
-                    
-            except Exception:
-                item_safe[key] = str(value)
-        
-        cart_safe.append(item_safe)
-    
-    # Sérialisation JSON
+# === CHARGEMENT DES DONNÉES ===
+@st.cache_data
+def load_articles():
+    """Charge les articles depuis le fichier CSV"""
     try:
-        articles_json = json.dumps(cart_safe, ensure_ascii=False, default=str)
-    except Exception as e:
-        articles_json = json.dumps(str(cart_safe), ensure_ascii=False)
-    
-    date_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    nb_articles = len(cart_safe)
-    
-    if USE_POSTGRESQL:
-        # PostgreSQL - Syntaxe %s et RETURNING
-        cursor.execute('''
-            INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
-        ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
-        commande_id = cursor.fetchone()[0]
-    else:
-        # SQLite - Syntaxe ? et lastrowid
-        cursor.execute('''
-            INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (date_now, contremaître, equipe, articles_json, total_prix, nb_articles))
-        commande_id = cursor.lastrowid
-    
-    conn.commit()
-    conn.close()
-    
-    return commande_id
+        df = pd.read_csv('articles.csv')
+        return df
+    except FileNotFoundError:
+        st.error("❌ Fichier articles.csv introuvable")
+        return pd.DataFrame()
 
-def get_all_commandes():
-    """Récupérer toutes les commandes"""
-    if USE_POSTGRESQL:
-        # PostgreSQL
-        conn = psycopg2.connect(DATABASE_URL)
-    else:
-        # SQLite
-        conn = sqlite3.connect(DATABASE_PATH)
-    
-    df = pd.read_sql_query("SELECT * FROM commandes ORDER BY date DESC", conn)
-    conn.close()
-    return df
+articles_df = load_articles()
 
-def get_statistics():
-    """Calculer les statistiques des commandes"""
-    try:
-        df_commandes = get_all_commandes()
-        
-        if len(df_commandes) == 0:
-            return {
-                'total_commandes': 0,
-                'total_depense': 0,
-                'df_equipes': pd.DataFrame(),
-                'df_contremaitres': pd.DataFrame(),
-                'df_mensuel': pd.DataFrame()
-            }
-        
-        # Statistiques globales
-        total_commandes = len(df_commandes)
-        total_depense = df_commandes['total_prix'].sum()
-        
-        # Groupement par équipe
-        df_equipes = df_commandes.groupby('equipe')['total_prix'].agg(['sum', 'count']).reset_index()
-        df_equipes.columns = ['equipe', 'total_prix', 'nb_commandes']
-        df_equipes = df_equipes.sort_values('total_prix', ascending=False)
-        
-        # Groupement par contremaître
-        df_contremaitres = df_commandes.groupby('contremaître')['total_prix'].agg(['sum', 'count']).reset_index()
-        df_contremaitres.columns = ['contremaître', 'total_prix', 'nb_commandes']
-        df_contremaitres = df_contremaitres.sort_values('total_prix', ascending=False)
-        
-        # Évolution mensuelle
-        df_commandes['mois'] = pd.to_datetime(df_commandes['date']).dt.to_period('M')
-        df_mensuel = df_commandes.groupby('mois')['total_prix'].sum().reset_index()
-        df_mensuel['mois'] = df_mensuel['mois'].astype(str)
-        
-        return {
-            'total_commandes': total_commandes,
-            'total_depense': total_depense,
-            'df_equipes': df_equipes,
-            'df_contremaitres': df_contremaitres,
-            'df_mensuel': df_mensuel
-        }
-        
-    except Exception as e:
-        return {
-            'total_commandes': 0,
-            'total_depense': 0,
-            'df_equipes': pd.DataFrame(),
-            'df_contremaitres': pd.DataFrame(), 
-            'df_mensuel': pd.DataFrame()
-        }
-
-# Initialiser la base de données au démarrage
-init_database()
-
-# === PUIS LE RESTE DU CODE (variables, constantes, etc.) ===
-
-# Variables de session
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-    
-if 'selected_category' not in st.session_state:
-    st.session_state.selected_category = None
-
-if 'show_search' not in st.session_state:
-    st.session_state.show_search = False
-
-# Configuration
-MAX_CART_AMOUNT = 1500.0  # Budget maximum autorisé
-
-# Force le rechargement CSS avec un timestamp
-css_version = int(time.time())
-
-# CSS simplifié sans les styles email
+# === CSS MODERNE ===
 st.markdown("""
 <style>
-.main-header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 3rem 0;
-    margin-bottom: 2rem;
-    border-radius: 0 0 20px 20px;
-    text-align: center;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+:root {
+    --primary-color: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary-color: #f8fafc;
+    --text-color: #1e293b;
+    --border-color: #e2e8f0;
+    --success-color: #10b981;
+    --error-color: #ef4444;
+    --border-radius: 0.5rem;
+    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
 }
 
-.pdf-section {
-    background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-    padding: 1.5rem;
-    border-radius: 15px;
-    margin: 1rem 0;
-    text-align: center;
-    box-shadow: 0 5px 15px rgba(168, 237, 234, 0.3);
+.stApp {
+    background-color: var(--secondary-color);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.success-message {
-    background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-    padding: 1rem;
-    border-radius: 10px;
-    margin: 1rem 0;
-}
-
-.category-card {
-    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    padding: 2rem;
-    border-radius: 20px;
-    margin: 1rem 0;
-    box-shadow: 0 8px 32px rgba(240, 147, 251, 0.3);
-    transition: all 0.3s ease;
-    border: none;
-    cursor: pointer;
-    text-align: center;
-}
-
-.category-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 15px 45px rgba(240, 147, 251, 0.4);
-}
-
-.category-icon {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-}
-
-.category-title {
-    font-size: 1.5rem;
-    font-weight: bold;
+.stButton > button {
+    background: var(--primary-color);
     color: white;
-    margin-bottom: 0.5rem;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: none;
+    border-radius: var(--border-radius);
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    transition: all 0.2s;
+    box-shadow: var(--shadow);
+    width: 100%;
 }
 
-.category-count {
-    color: rgba(255, 255, 255, 0.9);
-    font-size: 1rem;
+.stButton > button:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
 }
 
-.article-card {
-    background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-    padding: 1.5rem;
-    border-radius: 15px;
-    margin: 1rem 0;
-    box-shadow: 0 5px 15px rgba(168, 237, 234, 0.3);
-    transition: all 0.2s ease;
-    border-left: 4px solid #667eea;
+/* Animation pour erreurs budget */
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
 }
 
-.article-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(168, 237, 234, 0.4);
-}
-
-.article-name {
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: #2d3748;
-    margin-bottom: 0.5rem;
-}
-
-.article-description {
-    color: #4a5568;
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
-}
-
-.article-price {
-    color: #667eea;
-    font-weight: bold;
-    font-size: 1.1rem;
-}
-
-.search-section {
-    background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-    padding: 2rem;
-    border-radius: 15px;
-    margin: 2rem 0;
-    text-align: center;
-    box-shadow: 0 5px 15px rgba(252, 182, 159, 0.3);
-}
-
-.cart-summary {
-    background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-    padding: 1.5rem;
-    border-radius: 15px;
-    margin: 1rem 0;
-    box-shadow: 0 5px 15px rgba(168, 237, 234, 0.3);
-}
-
-.bounce-in {
-    animation: bounceIn 0.6s ease-out;
-}
-
-@keyframes bounceIn {
-    0% { transform: scale(0); opacity: 0; }
-    50% { transform: scale(1.05); opacity: 1; }
-    100% { transform: scale(1); }
-}
-
-/* Optimisations mobile */
-@media (max-width: 768px) {
-    .main-header h1 {
-        font-size: 1.8rem !important;
-    }
-    
-    .category-card {
-        margin-bottom: 1rem !important;
-        padding: 1rem !important;
-    }
-    
-    .article-card {
-        margin-bottom: 0.8rem !important;
-        padding: 0.8rem !important;
-    }
-    
-    .stButton > button {
-        width: 100% !important;
-        padding: 0.75rem !important;
-        font-size: 0.9rem !important;
-    }
-    
-    .css-1d391kg {
-        padding: 1rem !important;
-    }
-}
-
-/* Amélioration des emails sur mobile */
-.email-section {
-    background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+.budget-error {
+    animation: shake 0.5s ease-in-out;
+    border: 2px solid var(--error-color);
+    border-radius: var(--border-radius);
     padding: 1rem;
-    border-radius: 10px;
-    margin: 1rem 0;
-}
-
-.mobile-friendly-input input {
-    font-size: 16px !important;
+    background: #fef2f2;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# Lire et nettoyer les données
-@st.cache_data
-def load_and_clean_data():
-    articles_df = pd.read_csv('articles.csv')
-    
-    # Nettoyer les données
-    df_clean = articles_df[~articles_df['Nom'].str.contains('Nom|N° Référence', na=False)]
-    df_clean = df_clean.dropna(subset=['Nom', 'Prix', 'Catégorie'])
-    df_clean = df_clean.drop_duplicates(subset=['Nom', 'Catégorie'], keep='first')
-    df_clean = df_clean[~df_clean['Catégorie'].str.contains('Catégorie|Article', na=False)]
-    df_clean['Prix'] = pd.to_numeric(df_clean['Prix'], errors='coerce')
-    df_clean = df_clean.dropna(subset=['Prix'])
-    
-    return df_clean
-
-articles_df = load_and_clean_data()
-
-# Fonctions utilitaires
-def calculate_cart_total():
-    return sum(float(item['Prix']) for item in st.session_state.cart if item['Prix'] != 0)
-
-def convert_pandas_to_dict(article):
-    """Convertir un article pandas en dictionnaire Python natif"""
-    article_dict = {}
-    for key, value in article.items():
-        if pd.isna(value):  # Gestion des valeurs NaN
-            article_dict[key] = ""
-        elif isinstance(value, (pd.Series, pd.DataFrame)):
-            article_dict[key] = str(value)
-        else:
-            # Conversion en types Python natifs
-            if key == 'Prix':
-                article_dict[key] = float(value)
-            else:
-                article_dict[key] = str(value)
-    
-    return article_dict
-
-def add_to_cart(article):
-    current_total = calculate_cart_total()
-    new_total = current_total + float(article['Prix'])
-    
-    if new_total > MAX_CART_AMOUNT:
-        # Messages rigolos aléatoires
-        messages_rigolos = [
-            "🤯 Eh mais tu vas bouffer la baraque !",
-            "😱 Stop ! Tu vas ruiner l'entreprise !",
-            "🚨 Alerte ! Le comptable va faire une crise cardiaque !",
-            "🤑 Calme-toi Jeff Bezos !",
-            "😵 Tu te crois à Disneyland ?!",
-            "🛑 Freine tes ardeurs champion !",
-            "💸 Tu veux pas acheter l'usine tant qu'on y est ?",
-            "🎯 C'est pas Koh Lanta ici !",
-            "🚫 Le patron va te passer un savon !",
-            "😂 Tu confonds avec ton compte perso ou quoi ?"
-        ]
-        
-        message_rigolo = random.choice(messages_rigolos)
-        
-        # Popup rigolo avec Streamlit
-        st.error(f"❌ {message_rigolo}")
-        st.error(f"💰 Budget maximum: {MAX_CART_AMOUNT}€")
-        st.error(f"🧮 Total actuel: {current_total:.2f}€ + Article: {article['Prix']}€ = {new_total:.2f}€")
-        
-        # Animation CSS pour le popup
-        st.markdown("""
-        <div style="
-            background: linear-gradient(45deg, #ff6b6b, #ffa500);
-            color: white;
-            padding: 1rem;
-            border-radius: 15px;
-            text-align: center;
-            margin: 1rem 0;
-            animation: shake 0.5s ease-in-out;
-            border: 3px solid #ff4757;
-        ">
-            <h3>🚨 BUDGET EXPLOSION DÉTECTÉE ! 🚨</h3>
-            <p>Redescends sur terre mon pote ! 😄</p>
-        </div>
-        
-        <style>
-        @keyframes shake {
-            0% { transform: translateX(0); }
-            25% { transform: translateX(-5px); }
-            50% { transform: translateX(5px); }
-            75% { transform: translateX(-5px); }
-            100% { transform: translateX(0); }
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-    else:
-        # Utiliser la fonction de conversion
-        article_dict = convert_pandas_to_dict(article)
-        st.session_state.cart.append(article_dict)
-        st.success(f"✅ {article_dict['Nom']} ajouté au panier!")
-
-def remove_from_cart(index):
-    if 0 <= index < len(st.session_state.cart):
-        removed_item = st.session_state.cart.pop(index)
-        st.warning(f"❌ {removed_item['Nom']} retiré du panier!")
-
-def clear_cart():
-    st.session_state.cart = []
-    st.info("🛒 Panier vidé !")
-
-def add_multiple_to_cart(article, quantity):
-    """Ajouter plusieurs exemplaires d'un article au panier"""
-    current_total = calculate_cart_total()
-    article_price = float(article['Prix'])
-    new_total = current_total + (article_price * quantity)
-    
-    if new_total > MAX_CART_AMOUNT:
-        # Messages encore plus rigolos pour les gros dépassements
-        messages_gros_depassement = [
-            f"🤯 {quantity}x ?! Tu veux ouvrir ton propre magasin ?!",
-            f"😱 {quantity} articles ! Tu te crois dans un supermarché ?",
-            f"🚨 {quantity}x ! Arrête le massacre !",
-            f"🤑 {quantity} pièces ! T'es millionnaire en secret ?",
-            f"😵 {quantity}x ! Le comptable vient de s'évanouir !",
-            f"🛑 {quantity} articles ! Tu collectionnes ou tu travailles ?",
-            f"💸 {quantity}x ! Tu veux ruiner la boîte !",
-            f"😂 {quantity} pièces ! C'est Noël en avance ?"
-        ]
-        
-        message_rigolo = random.choice(messages_gros_depassement)
-        
-        st.error(f"❌ {message_rigolo}")
-        st.error(f"💰 Budget maximum: {MAX_CART_AMOUNT}€")
-        st.error(f"🧮 Total actuel: {current_total:.2f}€ + {quantity}x{article_price}€ = {new_total:.2f}€")
-        
-        # Popup encore plus animé pour les gros dépassements
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(45deg, #ff4757, #ff3838);
-            color: white;
-            padding: 1.5rem;
-            border-radius: 20px;
-            text-align: center;
-            margin: 1rem 0;
-            animation: bounce 1s ease-in-out infinite;
-            border: 4px solid #ff1744;
-            box-shadow: 0 0 20px rgba(255, 23, 68, 0.5);
-        ">
-            <h2>🚨 ALERTE ROUGE ! 🚨</h2>
-            <h3>{quantity}x articles ! Sérieusement ?! 😅</h3>
-            <p>Reviens sur terre champion ! 🌍</p>
-        </div>
-        
-        <style>
-        @keyframes bounce {{
-            0%, 20%, 50%, 80%, 100% {{ transform: translateY(0); }}
-            40% {{ transform: translateY(-10px); }}
-            60% {{ transform: translateY(-5px); }}
-        }}
-        </style>
-        """, unsafe_allow_html=True)
-        
-    else:
-        # Ajouter chaque article individuellement (pour le détail)
-        article_dict = convert_pandas_to_dict(article)
-        
-        for i in range(quantity):
-            st.session_state.cart.append(article_dict.copy())
-        
-        st.success(f"✅ {quantity}x {article_dict['Nom']} ajoutés au panier!")
-        st.info(f"💰 Nouveau total : {new_total:.2f}€")
-
-def add_multiple_to_cart_optimized(article, quantity):
-    """Version optimisée qui groupe les articles identiques"""
-    current_total = calculate_cart_total()
-    article_price = float(article['Prix'])
-    new_total = current_total + (article_price * quantity)
-    
-    if new_total > MAX_CART_AMOUNT:
-        st.error(f"❌ Budget dépassé ! {new_total:.2f}€ > {MAX_CART_AMOUNT}€")
-        return
-    
-    article_dict = convert_pandas_to_dict(article)
-    
-    # Chercher si l'article existe déjà dans le panier
-    found = False
-    for cart_item in st.session_state.cart:
-        if cart_item['Nom'] == article_dict['Nom']:
-            # Ajouter la quantité à l'article existant
-            if 'Quantité' in cart_item:
-                cart_item['Quantité'] += quantity
-            else:
-                cart_item['Quantité'] = quantity + 1
-            found = True
-            break
-    
-    if not found:
-        # Ajouter nouvel article avec quantité
-        article_dict['Quantité'] = quantity
-        st.session_state.cart.append(article_dict)
-    
-    st.success(f"✅ {quantity}x {article_dict['Nom']} ajoutés!")
-    st.info(f"💰 Nouveau total : {new_total:.2f}€")
-
-# Ajouter les fonctions groupement JUSTE APRÈS add_multiple_to_cart()
-
-def group_articles_by_base_name(articles_df):
-    """Grouper les articles par nom de base (sans taille)"""
-    import re
-    grouped_articles = {}
-    
-    for idx, article in articles_df.iterrows():
-        # Extraire le nom de base (enlever les tailles courantes)
-        nom_original = article['Nom']
-        
-        # Patterns de tailles à enlever
-        taille_patterns = [
-            r'\s+Taille\s+\w+', r'\s+T\.\s*\w+', r'\s+Size\s+\w+',
-            r'\s+XS\b', r'\s+S\b', r'\s+M\b', r'\s+L\b', r'\s+XL\b', r'\s+XXL\b', r'\s+XXXL\b',
-            r'\s+\d+\b', r'\s+\d+/\d+\b'  # Tailles numériques
-        ]
-        
-        nom_base = nom_original
-        taille_detectee = ""
-        
-        # Détecter et extraire la taille
-        for pattern in taille_patterns:
-            match = re.search(pattern, nom_original, re.IGNORECASE)
-            if match:
-                taille_detectee = match.group().strip()
-                nom_base = re.sub(pattern, '', nom_original, flags=re.IGNORECASE).strip()
-                break
-        
-        # Si pas de taille détectée, garder tel quel
-        if not taille_detectee:
-            taille_detectee = "Unique"
-            nom_base = nom_original
-        
-        # Grouper
-        if nom_base not in grouped_articles:
-            grouped_articles[nom_base] = {
-                'nom_base': nom_base,
-                'categorie': article['Catégorie'],
-                'variants': []
-            }
-        
-        grouped_articles[nom_base]['variants'].append({
-            'taille': taille_detectee,
-            'prix': article['Prix'],
-            'nom_complet': nom_original,
-            'unite': article.get('Unité', 'unité'),
-            'article_original': article
-        })
-    
-    return grouped_articles
-
-def display_grouped_articles(category_articles):
-    """Afficher les articles groupés par nom de base"""
-    grouped = group_articles_by_base_name(category_articles)
-    
-    for nom_base, group_data in grouped.items():
-        variants = group_data['variants']
-        
-        # Si un seul variant, affichage normal
-        if len(variants) == 1:
-            variant = variants[0]
-            article = variant['article_original']
-            
-            st.markdown(f"""
-            <div style="
-                background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-                padding: 1rem;
-                border-radius: 15px;
-                margin: 1rem 0;
-                color: white;
-                box-shadow: 0 5px 15px rgba(240, 147, 251, 0.3);
-            ">
-                <h4 style="margin: 0 0 0.5rem 0;">{variant['nom_complet']}</h4>
-                <p style="margin: 0; opacity: 0.9;">{variant['prix']}€ / {variant['unite']}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Contrôles normaux
-            col_qty, col_btn = st.columns([1, 2])
-            
-            with col_qty:
-                qty_key = f"qty_{nom_base.replace(' ', '_')}"
-                quantity = st.number_input(
-                    "Quantité", 
-                    min_value=0, 
-                    max_value=50, 
-                    value=0,
-                    step=1,
-                    key=qty_key
-                )
-            
-            with col_btn:
-                if st.button(f"🛒 Ajouter au panier", key=f"add_{nom_base.replace(' ', '_')}"):
-                    if quantity > 0:
-                        add_multiple_to_cart(article, quantity)
-                    else:
-                        st.warning("⚠️ Veuillez sélectionner une quantité > 0")
-        
-        else:
-            # Multiples variants = affichage groupé
-            st.markdown(f"""
-            <div style="
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                padding: 1rem;
-                border-radius: 15px;
-                margin: 1rem 0;
-                color: white;
-                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
-            ">
-                <h4 style="margin: 0 0 0.5rem 0;">👕 {nom_base}</h4>
-                <p style="margin: 0; opacity: 0.9;">📏 {len(variants)} tailles disponibles</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Sélection de taille et quantité
-            col_size, col_qty, col_btn = st.columns([2, 1, 2])
-            
-            with col_size:
-                taille_options = [f"{v['taille']} - {v['prix']}€" for v in variants]
-                taille_selectionnee = st.selectbox(
-                    "Choisir taille",
-                    taille_options,
-                    key=f"size_{nom_base.replace(' ', '_')}"
-                )
-                
-                # Retrouver le variant sélectionné
-                selected_variant = None
-                for v in variants:
-                    if f"{v['taille']} - {v['prix']}€" == taille_selectionnee:
-                        selected_variant = v
-                        break
-            
-            with col_qty:
-                quantity = st.number_input(
-                    "Quantité",
-                    min_value=0,
-                    max_value=50,
-                    value=0,
-                    step=1,
-                    key=f"qty_grouped_{nom_base.replace(' ', '_')}"
-                )
-            
-            with col_btn:
-                if st.button(f"🛒 Ajouter", key=f"add_grouped_{nom_base.replace(' ', '_')}"):
-                    if quantity > 0 and selected_variant:
-                        add_multiple_to_cart(selected_variant['article_original'], quantity)
-                    else:
-                        st.warning("⚠️ Sélectionnez une taille et une quantité > 0")
-
-# Fonctions PDF et Email
-def generate_pdfs():
-    """Générer 2 PDFs : commande + réception"""
-    # PDF 1 : Commande (pour commanditaire)
-    buffer_commande = generate_pdf_commande()
-    
-    # PDF 2 : Réception (pour réceptionnaire) 
-    buffer_reception = generate_pdf_reception()
-    
-    return buffer_commande, buffer_reception
-
-def generate_pdf_commande():
-    """PDF pour la personne qui passe commande"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
-    
-    # Titre principal
-    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, spaceAfter=30, alignment=1)
-    title = Paragraph("🛒 COMMANDE D'ÉQUIPEMENTS DE PROTECTION", title_style)
-    story.append(title)
-    
-    # Informations équipe
-    if hasattr(st.session_state, 'contremaître') or hasattr(st.session_state, 'equipe'):
-        info_style = ParagraphStyle('InfoStyle', parent=styles['Normal'], fontSize=12, alignment=1, spaceAfter=20)
-        
-        info_text = []
-        if hasattr(st.session_state, 'contremaître') and st.session_state.contremaître:
-            info_text.append(f"👨‍💼 Contremaître: {st.session_state.contremaître}")
-        if hasattr(st.session_state, 'equipe') and st.session_state.equipe:
-            info_text.append(f"👷‍♂️ Équipe: {st.session_state.equipe}")
-        
-        if info_text:
-            info_paragraph = Paragraph("<br/>".join(info_text), info_style)
-            story.append(info_paragraph)
-    
-    # Date
-    date_style = ParagraphStyle('DateStyle', parent=styles['Normal'], fontSize=12, alignment=1)
-    date_text = Paragraph(f"📅 Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}", date_style)
-    story.append(date_text)
-    story.append(Spacer(1, 20))
-    
-    # Tableau des articles NORMAL
-    data = [['Article', 'Catégorie', 'Prix (€)', 'Unité']]
-    total = 0
-    
-    for item in st.session_state.cart:
-        price = float(item['Prix'])
-        data.append([
-            item['Nom'],
-            item['Catégorie'],
-            f"{price:.2f}",
-            item.get('Unité', 'unité')
-        ])
-        total += price
-    
-    # Ligne total
-    data.append(['', '', f"TOTAL: {total:.2f}€", ''])
-    
-    # Style du tableau
-    table = Table(data)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 14),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.lightgreen),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    
-    story.append(table)
-    doc.build(story)
-    
-    buffer.seek(0)
-    return buffer
-
-def generate_pdf_reception():
-    """PDF pour la personne qui réceptionne (avec checkboxes)"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
-    
-    # Titre principal SANS carrés noirs
-    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, spaceAfter=30, alignment=1)
-    title = Paragraph("BON DE RÉCEPTION - ÉQUIPEMENTS EPI", title_style)
-    story.append(title)
-    
-    # Informations équipe
-    if hasattr(st.session_state, 'contremaître') or hasattr(st.session_state, 'equipe'):
-        info_style = ParagraphStyle('InfoStyle', parent=styles['Normal'], fontSize=12, alignment=1, spaceAfter=20)
-        
-        info_text = []
-        if hasattr(st.session_state, 'contremaître') and st.session_state.contremaître:
-            info_text.append(f"Contremaître: {st.session_state.contremaître}")
-        if hasattr(st.session_state, 'equipe') and st.session_state.equipe:
-            info_text.append(f"Équipe: {st.session_state.equipe}")
-        
-        if info_text:
-            info_paragraph = Paragraph("<br/>".join(info_text), info_style)
-            story.append(info_paragraph)
-    
-    # Date 
-    date_style = ParagraphStyle('DateStyle', parent=styles['Normal'], fontSize=12, alignment=1)
-    date_text = Paragraph(f"Date commande: {datetime.now().strftime('%d/%m/%Y %H:%M')}", date_style)
-    story.append(date_text)
-    story.append(Spacer(1, 20))
-    
-    # Instructions SANS carrés noirs
-    instruction_style = ParagraphStyle('InstructionStyle', parent=styles['Normal'], fontSize=14, alignment=1, spaceAfter=20)
-    instruction = Paragraph("<b>INSTRUCTIONS:</b> Cochez les cases lors de la réception des articles", instruction_style)
-    story.append(instruction)
-    story.append(Spacer(1, 20))
-    
-    # Tableau SIMPLE sans symboles
-    data = [['Coché', 'Article', 'Catégorie', 'Prix (€)', 'Quantité', 'Reçu']]
-    total = 0
-    
-    for item in st.session_state.cart:
-        price = float(item['Prix'])
-        data.append([
-            '',  # Colonne vide pour cocher
-            item['Nom'],
-            item['Catégorie'], 
-            f"{price:.2f}",
-            '1',
-            ''   # Colonne vide pour "Reçu"
-        ])
-        total += price
-    
-    # Ligne total
-    data.append(['', '', '', f"TOTAL: {total:.2f}€", '', ''])
-    
-    # Style du tableau
-    table = Table(data)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -2), colors.lightblue),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.lightgreen),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('GRID', (0, 0), (-1, -1), 2, colors.black)
-    ]))
-    
-    story.append(table)
-    story.append(Spacer(1, 30))
-    
-    # Section signature SANS carrés noirs
-    signature_style = ParagraphStyle('SignatureStyle', parent=styles['Normal'], fontSize=12, spaceAfter=10)
-    
-    story.append(Paragraph("<b>RÉCEPTION EFFECTUÉE PAR:</b>", signature_style))
-    story.append(Spacer(1, 20))
-    story.append(Paragraph("Nom: ________________________________", signature_style))
-    story.append(Spacer(1, 15))
-    story.append(Paragraph("Date: ________________________________", signature_style))
-    story.append(Spacer(1, 15))
-    story.append(Paragraph("Signature: ________________________________", signature_style))
-    
-    doc.build(story)
-    
-    buffer.seek(0)
-    return buffer
-
-# En-tête principal
-st.markdown("""
-<div class="main-header">
-    <h1 style="color: white; font-weight: 800; font-size: 2.2rem; margin-bottom: 0.5rem; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">🛒 Bienvenue dans Commande Articles et EPI</h1>
-    <p style="text-align: center; color: white; font-family: 'Inter', sans-serif; margin: 0; font-size: 1.2rem; font-weight: 500;">
-        🛡️ **Votre solution complète pour les équipements de protection individuelle**
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-# Section informations équipe
-st.markdown("""
-<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.5rem; border-radius: 15px; margin-bottom: 2rem; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);">
-    <h3 style="color: white; margin: 0 0 1rem 0; font-family: 'Inter', sans-serif; font-weight: 600;">👥 Informations de l'équipe</h3>
-</div>
-""", unsafe_allow_html=True)
-
-# Listes prédéfinies
-contremaîtres_list = [
-    "Sélectionner un contremaître...",
-    "PINTO",
-    "CASAIS", 
-    "WROBEL",
-    "ORLANDI",
-    "KADRI",
-    "SHOM"
-]
-
-equipes_list = [
-    "Sélectionner une équipe...",
-    "PFI1",
-    "PFI2",
-    "PFI3", 
-    "PFI4",
-    "PFI5",
-    "PFI6"
-]
-
-# Champs déroulants pour contremaître et équipe
-col1, col2 = st.columns(2)
-with col1:
-    contremaître = st.selectbox(
-        "👨‍💼 Nom du contremaître", 
-        contremaîtres_list,
-        key="contremaître_select"
-    )
-with col2:
-    equipe = st.selectbox(
-        "👷‍♂️ Équipe", 
-        equipes_list,
-        key="equipe_select"
-    )
-
-# Sauvegarder dans session_state seulement si une option valide est sélectionnée
-if contremaître and contremaître != "Sélectionner un contremaître...":
-    st.session_state.contremaître = contremaître
-    
-if equipe and equipe != "Sélectionner une équipe...":
-    st.session_state.equipe = equipe
-
-# Sidebar pour le panier (identique à avant mais condensé)
-with st.sidebar:
-    cart_count = len(st.session_state.cart)
-    current_total = calculate_cart_total()
-    
-    st.markdown(f"""
-    <div class="cart-header">
-        <h2 style="margin: 0; font-size: 1.5rem;">🛒 PANIER</h2>
-        <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem; opacity: 0.9;">
-            📦 {cart_count} article{'s' if cart_count != 1 else ''}
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Afficher les infos équipe si renseignées
-    if (hasattr(st.session_state, 'contremaître') and st.session_state.contremaître) or \
-       (hasattr(st.session_state, 'equipe') and st.session_state.equipe):
-        st.markdown("### 👥 Équipe sélectionnée")
-        if hasattr(st.session_state, 'contremaître') and st.session_state.contremaître:
-            st.markdown(f"**👨‍💼 Contremaître:** {st.session_state.contremaître}")
-        if hasattr(st.session_state, 'equipe') and st.session_state.equipe:
-            st.markdown(f"**👷‍♂️ Équipe:** {st.session_state.equipe}")
-        st.markdown("---")
-    
-    if st.session_state.cart:
-        # Affichage du total et gestion du panier (code existant)
-        if current_total > MAX_CART_AMOUNT * 0.9:
-            st.markdown(f"""
-            <div class="cart-warning">
-                ⚠️ ATTENTION<br>
-                {current_total:.2f}€ / {MAX_CART_AMOUNT}€<br>
-                <small>Limite presque atteinte!</small>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="cart-total">
-                💰 TOTAL<br>
-                {current_total:.2f}€ / {MAX_CART_AMOUNT}€
-            </div>
-            """, unsafe_allow_html=True)
-        
-        if st.button("🗑️ Vider le panier", key="clear_cart"):
-            clear_cart()
-            st.rerun()
-        
-        st.markdown("---")
-        
-        # Articles du panier (condensé)
-        st.markdown("### 🛒 Panier")
-        
-        total = 0
-        for i, item in enumerate(st.session_state.cart):
-            qty = item.get('Quantité', 1)
-            item_total = float(item['Prix']) * qty
-            total += item_total
-            
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.markdown(f"**{item['Nom']}**")
-                if qty > 1:
-                    st.markdown(f"*{qty}x {item['Prix']}€ = {item_total:.2f}€*")
-                else:
-                    st.markdown(f"*{item['Prix']}€*")
-            
-            with col2:
-                if qty > 1:
-                    new_qty = st.number_input(
-                        "Qté", 
-                        min_value=1, 
-                        value=qty, 
-                        key=f"cart_qty_{i}",
-                        help="Modifier quantité"
-                    )
-                    if new_qty != qty:
-                        st.session_state.cart[i]['Quantité'] = new_qty
-                        st.rerun()
-            
-            with col3:
-                if st.button("🗑️", key=f"remove_{i}", help="Supprimer"):
-                    remove_from_cart(i)
-                    st.rerun()
-        
-        st.markdown(f"### 💰 **Total: {total:.2f}€**")
-        
-        # Section finalisation commande dans col2 (panier)
-        if st.session_state.cart:
-            st.markdown("### 📋 Finaliser la commande")
-            
-            # Boutons PDF
-            col_pdf1, col_pdf2 = st.columns(2)
-            
-            with col_pdf1:
-                if st.button("📄 Générer PDF Commande", type="primary"):
-                    if st.session_state.contremaître and st.session_state.equipe:
-                        try:
-                            # Générer le PDF
-                            pdf_buffer = generate_pdf_commande()
-                            
-                            # 🆕 ENREGISTRER DANS LA BASE DE DONNÉES
-                            total_prix = calculate_cart_total()
-                            commande_id = save_commande_to_db(
-                                st.session_state.contremaître,
-                                st.session_state.equipe, 
-                                st.session_state.cart,
-                                total_prix
-                            )
-                            
-                            # Téléchargement du PDF
-                            st.download_button(
-                                label="⬇️ Télécharger le PDF",
-                                data=pdf_buffer.getvalue(),
-                                file_name=f"commande_{st.session_state.contremaître}_{st.session_state.equipe}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                                mime="application/pdf"
-                            )
-                            
-                            st.success(f"✅ PDF généré et commande #{commande_id} enregistrée !")
-                            st.info("💡 Vous pouvez maintenant vider le panier ou continuer vos achats")
-                            
-                        except Exception as e:
-                            st.error(f"❌ Erreur lors de la génération : {str(e)}")
-                    else:
-                        st.warning("⚠️ Veuillez remplir le contremaître et l'équipe avant de générer le PDF")
-            
-            with col_pdf2:
-                if st.button("📋 Générer PDF Réception", type="secondary"):
-                    if st.session_state.contremaître and st.session_state.equipe:
-                        try:
-                            # Générer le PDF de réception
-                            pdf_buffer = generate_pdf_reception()
-                            
-                            # Téléchargement (pas besoin de re-sauvegarder si déjà fait pour la commande)
-                            st.download_button(
-                                label="⬇️ Télécharger PDF Réception",
-                                data=pdf_buffer.getvalue(),
-                                file_name=f"reception_{st.session_state.contremaître}_{st.session_state.equipe}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                                mime="application/pdf"
-                            )
-                            
-                        except Exception as e:
-                            st.error(f"❌ Erreur : {str(e)}")
-    else:
-        st.markdown("""
-        <div style="text-align: center; padding: 2rem; color: #718096; font-family: 'Poppins', sans-serif;">
-            <div style="font-size: 3rem; margin-bottom: 1rem;">🛒</div>
-            <h3 style="margin: 0;">Votre panier est vide</h3>
-            <p style="margin: 0.5rem 0 0 0; opacity: 0.8;">Ajoutez des articles pour commencer !</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-# Interface principale avec navigation par catégories
-col1, col2 = st.columns([3, 1])
-
-with col2:
-    st.markdown("### 🧭 Navigation")
-    
-    page = st.selectbox(
-        "📍 Aller à :",
-        ["🛒 Catalogue", "📊 Historique", "📈 Statistiques"],
-        key="page_select"
-    )
-
-with col1:
-    # Navigation entre les pages  
-    if page == "🛒 Catalogue":
-        # Recherche avancée (optionnelle)
-        if st.session_state.show_search:
-            st.markdown("""
-            <div class="search-section">
-                <h3>🔍 Recherche avancée</h3>
-                <p style="color: #718096; margin: 0;">Trouvez rapidement l'article que vous cherchez</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            query = st.text_input("", placeholder="🔍 Tapez le nom d'un article...", label_visibility="collapsed")
-            
-            if query:
-                query_lower = query.lower()
-                filtered_articles = articles_df[
-                    articles_df['Nom'].str.lower().str.contains(query_lower, na=False) |
-                    articles_df['Description'].str.lower().str.contains(query_lower, na=False)
-                ]
-                
-                st.markdown(f"""
-                <div style="margin: 1rem 0; padding: 1rem; background: rgba(102, 126, 234, 0.1); border-radius: 10px; border-left: 4px solid #667eea;">
-                    <strong style="color: #667eea;">📊 {len(filtered_articles)} articles trouvés</strong>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                for _, article in filtered_articles.head(10).iterrows():
-                    st.markdown(f"""
-                    <div class="article-card">
-                        <div class="article-name">{article['Nom']}</div>
-                        <div class="article-description">{article['Description']}</div>
-                        <div class="article-price">{article['Prix']} € / {article['Unité']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button(f"➕ Ajouter au panier", key=f"search_{article['Référence']}"):
-                        add_to_cart(article)
-                        st.rerun()
-
-        # Affichage principal : Catégories ou Articles d'une catégorie
-        if st.session_state.selected_category is None and not st.session_state.show_search:
-            # Vue des catégories - Design moderne
-            st.markdown("""
-            <div style="text-align: center; margin: 3rem 0;">
-                <h1 style="color: white; font-family: 'Inter', sans-serif; font-weight: 800; font-size: 2.5rem; margin-bottom: 1rem; text-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);">
-                    🛡️ Équipements de Protection Individuelle
-                </h1>
-                <p style="color: rgba(255, 255, 255, 0.9); font-family: 'Inter', sans-serif; margin: 0; font-size: 1.2rem; font-weight: 400;">
-                    Découvrez notre gamme complète d'EPI professionnels
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            categories = sorted(articles_df['Catégorie'].unique())
-            
-            # Définir des icônes EPI pour chaque catégorie
-            category_icons = {
-                'Bourses/Pochettes': '🎒',
-                'Casques': '⛑️', 
-                'Chaussures': '🥾',
-                'Gants': '🧤',
-                'Outils': '🔧',
-                'Lunette': '🥽',
-                'Pointure': '👢',
-                'Veste Blouson': '🦺',
-                'Jugulaire': '⛑️',
-                'Fort Métal Peinture': '🎨',
-                'Lampe': '🔦'
-            }
-            
-            # Afficher les catégories en grille
-            cols = st.columns(2)
-            
-            for i, category in enumerate(categories):
-                article_count = len(articles_df[articles_df['Catégorie'] == category])
-                icon = category_icons.get(category, '🛡️')
-                
-                with cols[i % 2]:
-                    # Créer une carte avec bouton Streamlit fonctionnel
-                    st.markdown(f"""
-                    <div class="category-card">
-                        <div class="category-icon">{icon}</div>
-                        <div class="category-title">{category}</div>
-                        <div class="category-count">{article_count} article{'s' if article_count != 1 else ''}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Bouton fonctionnel en pleine largeur
-                    if st.button(f"🔍 Explorer {category}", key=f"cat_{category}", help=f"Voir les {article_count} articles de {category}"):
-                        st.session_state.selected_category = category
-                        st.rerun()
-
-        elif st.session_state.selected_category and not st.session_state.show_search:
-            # Vue des articles d'une catégorie
-            category = st.session_state.selected_category
-            category_articles = articles_df[articles_df['Catégorie'] == category]
-            
-            # BOUTON RETOUR EN HAUT - TRÈS VISIBLE 🔝
-            st.markdown("""
-            <div style="background: #f0f0f0; padding: 1rem; border-radius: 10px; margin-bottom: 1rem; text-align: center;">
-            """, unsafe_allow_html=True)
-            
-            if st.button("🏠 ⬅️ RETOUR AUX CATÉGORIES", key="back_to_categories_top", 
-                       type="primary", help="Cliquez pour retourner aux catégories"):
-                st.session_state.selected_category = None
-                st.session_state.show_search = False
-                st.rerun()
-            
-            st.markdown("</div>", unsafe_allow_html=True)
-            
-            st.markdown(f"""
-            <div style="text-align: center; margin: 2rem 0;">
-                <h2 style="color: #2d3748; font-family: 'Poppins', sans-serif; font-weight: 600; margin-bottom: 0.5rem;">
-                    📁 {category}
-                </h2>
-                <p style="color: #718096; font-family: 'Poppins', sans-serif; margin: 0;">
-                    {len(category_articles)} articles dans cette catégorie
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # AFFICHAGE GROUPÉ DES ARTICLES
-            display_grouped_articles(category_articles)
-
-    elif page == "📊 Historique":
-        st.markdown("""
-        <div style="text-align: center; margin: 2rem 0;">
-            <h2 style="color: #2d3748; font-family: 'Poppins', sans-serif; font-weight: 600;">
-                📊 Historique des Commandes
-            </h2>
-            <p style="color: #718096; font-family: 'Poppins', sans-serif;">
-                Consultez toutes les commandes passées
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        try:
-            df_commandes = get_all_commandes()
-            
-            if len(df_commandes) > 0:
-                # Filtres
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    filtre_equipe = st.selectbox(
-                        "👷‍♂️ Filtrer par équipe",
-                        ["Toutes"] + list(df_commandes['equipe'].unique())
-                    )
-                
-                with col2:
-                    filtre_contremaître = st.selectbox(
-                        "👨‍💼 Filtrer par contremaître", 
-                        ["Tous"] + list(df_commandes['contremaître'].unique())
-                    )
-                
-                with col3:
-                    periode = st.selectbox(
-                        "📅 Période",
-                        ["Tout", "30 derniers jours", "7 derniers jours", "Aujourd'hui"]
-                    )
-                
-                # Appliquer les filtres
-                df_filtered = df_commandes.copy()
-                
-                if filtre_equipe != "Toutes":
-                    df_filtered = df_filtered[df_filtered['equipe'] == filtre_equipe]
-                
-                if filtre_contremaître != "Tous":
-                    df_filtered = df_filtered[df_filtered['contremaître'] == filtre_contremaître]
-                
-                if periode != "Tout":
-                    aujourd_hui = datetime.now()
-                    if periode == "Aujourd'hui":
-                        df_filtered = df_filtered[df_filtered['date'].str.startswith(aujourd_hui.strftime('%Y-%m-%d'))]
-                    elif periode == "7 derniers jours":
-                        il_y_a_7_jours = (aujourd_hui - timedelta(days=7)).strftime('%Y-%m-%d')
-                        df_filtered = df_filtered[df_filtered['date'] >= il_y_a_7_jours]
-                    elif periode == "30 derniers jours":
-                        il_y_a_30_jours = (aujourd_hui - timedelta(days=30)).strftime('%Y-%m-%d')
-                        df_filtered = df_filtered[df_filtered['date'] >= il_y_a_30_jours]
-                
-                # Affichage résultats
-                st.markdown(f"**📋 {len(df_filtered)} commandes trouvées**")
-                
-                # Tableau des commandes
-                for _, commande in df_filtered.iterrows():
-                    with st.expander(f"🛒 Commande #{commande['id']} - {commande['date'][:16]} - {commande['total_prix']:.2f}€"):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.markdown(f"**👨‍💼 Contremaître:** {commande['contremaître']}")
-                            st.markdown(f"**👷‍♂️ Équipe:** {commande['equipe']}")
-                        
-                        with col2:
-                            st.markdown(f"**💰 Total:** {commande['total_prix']:.2f}€")
-                            st.markdown(f"**📦 Articles:** {commande['nb_articles']}")
-                        
-                        with col3:
-                            st.markdown(f"**📅 Date:** {commande['date'][:16]}")
-                            st.markdown(f"**✅ Statut:** {commande['statut']}")
-                        
-                        # Détail des articles
-                        if st.button(f"👀 Voir détails", key=f"details_{commande['id']}"):
-                            articles = json.loads(commande['articles_json'])
-                            st.markdown("**📋 Articles commandés :**")
-                            for article in articles:
-                                st.markdown(f"- **{article['Nom']}** - {article['Prix']}€ ({article['Catégorie']})")
-                
-            else:
-                st.info("📭 Aucune commande enregistrée pour le moment.")
-            
-        except Exception as e:
-            st.error(f"❌ Erreur lors du chargement : {str(e)}")
-
-    elif page == "📈 Statistiques":
-        st.markdown("""
-        <div style="text-align: center; margin: 2rem 0;">
-            <h2 style="color: #2d3748; font-family: 'Poppins', sans-serif; font-weight: 600;">
-                📈 Statistiques et Bilans
-            </h2>
-            <p style="color: #718096; font-family: 'Poppins', sans-serif;">
-                Analysez les dépenses et tendances
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        try:
-            stats = get_statistics()
-            
-            # Métriques principales
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    label="📋 Total Commandes",
-                    value=stats['total_commandes']
-                )
-            
-            with col2:
-                st.metric(
-                    label="💰 Total Dépensé", 
-                    value=f"{stats['total_depense']:.2f}€"
-                )
-            
-            with col3:
-                if stats['total_commandes'] > 0:
-                    moyenne = stats['total_depense'] / stats['total_commandes']
-                    st.metric(
-                        label="📊 Moyenne/Commande",
-                        value=f"{moyenne:.2f}€"
-                    )
-            
-            with col4:
-                # Calculer la période réelle basée sur les données
-                if stats['total_commandes'] > 0:
-                    # Récupérer la première et dernière commande
-                    df_commandes = get_all_commandes()
-                    if len(df_commandes) > 0:
-                        premiere_date = df_commandes['date'].min()[:4]  # Année de la première commande
-                        derniere_date = df_commandes['date'].max()[:4]  # Année de la dernière commande
-                        
-                        if premiere_date == derniere_date:
-                            periode_text = premiere_date
-                        else:
-                            periode_text = f"{premiere_date}-{derniere_date}"
-                    else:
-                        periode_text = str(datetime.now().year)
-                else:
-                    periode_text = str(datetime.now().year)
-                
-                st.metric(
-                    label="📅 Période",
-                    value=periode_text
-                )
-            
-            st.markdown("---")
-            
-            # Graphiques
-            if len(stats['df_equipes']) > 0:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("### 👷‍♂️ Dépenses par Équipe")
-                    fig_equipes = px.bar(
-                        stats['df_equipes'], 
-                        x='equipe', 
-                        y='total_prix',
-                        title="Montant total par équipe",
-                        color='total_prix',
-                        color_continuous_scale='viridis'
-                    )
-                    st.plotly_chart(fig_equipes, use_container_width=True)
-                
-                with col2:
-                    st.markdown("### 👨‍💼 Dépenses par Contremaître") 
-                    fig_contremaitres = px.pie(
-                        stats['df_contremaitres'],
-                        values='total_prix',
-                        names='contremaître', 
-                        title="Répartition par contremaître"
-                    )
-                    st.plotly_chart(fig_contremaitres, use_container_width=True)
-            
-            # Évolution mensuelle
-            if len(stats['df_mensuel']) > 0:
-                st.markdown("### 📈 Évolution Mensuelle")
-                fig_mensuel = px.line(
-                    stats['df_mensuel'],
-                    x='mois',
-                    y='total_prix', 
-                    title="Évolution des dépenses mensuelles",
-                    markers=True
-                )
-                st.plotly_chart(fig_mensuel, use_container_width=True)
-            
-            # Tableaux détaillés
-            st.markdown("---")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 📊 Top Équipes")
-                st.dataframe(stats['df_equipes'], use_container_width=True)
-            
-            with col2:
-                st.markdown("### 📊 Top Contremaîtres") 
-                st.dataframe(stats['df_contremaitres'], use_container_width=True)
-                
-            # Export
-            if st.button("📤 Exporter les statistiques Excel"):
-                # Créer un fichier Excel avec les stats
-                st.info("🚧 Fonctionnalité d'export en développement...")
-                
-        except Exception as e:
-            st.error(f"❌ Erreur lors du calcul des statistiques : {str(e)}")
-
-# Ajouter une fonction de test (temporaire)
-def test_database_connection():
-    """Tester la connexion à la base de données"""
+# === FONCTIONS BASE DE DONNÉES ===
+def init_database():
+    """Initialise les tables de base de données"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
-            cursor.execute("SELECT version();")
-            version = cursor.fetchone()
-            conn.close()
-            return f"✅ PostgreSQL connecté: {version[0][:50]}..."
+            # Table commandes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS commandes (
+                    id SERIAL PRIMARY KEY,
+                    date TIMESTAMP,
+                    contremaître TEXT,
+                    equipe TEXT,
+                    articles_json TEXT,
+                    total_prix REAL,
+                    nb_articles INTEGER
+                )
+            ''')
+            # Table users
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    role TEXT DEFAULT 'user',
+                    equipe TEXT,
+                    fonction TEXT,
+                    email TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
-            cursor.execute("SELECT sqlite_version();")
-            version = cursor.fetchone()
-            conn.close()
-            return f"✅ SQLite connecté: {version[0]}"
+            # Table commandes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS commandes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT,
+                    contremaître TEXT,
+                    equipe TEXT,
+                    articles_json TEXT,
+                    total_prix REAL,
+                    nb_articles INTEGER
+                )
+            ''')
+            # Table users
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    role TEXT DEFAULT 'user',
+                    equipe TEXT,
+                    fonction TEXT,
+                    email TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+        
+        conn.commit()
+        conn.close()
+        
     except Exception as e:
-        return f"❌ Erreur connexion: {str(e)}"
+        st.error(f"Erreur initialisation BDD: {e}")
 
-# Dans votre sidebar, ajouter temporairement :
-with st.sidebar:
-    st.markdown("---")
-    st.markdown("### 🔧 Debug")
-    if st.button("🗄️ Test DB"):
-        result = test_database_connection()
-        if "✅" in result:
-            st.success(result)
+def save_commande_to_db(commande_data):
+    """Sauvegarde une commande en base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
         else:
-            st.error(result)
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+        
+        articles_json = json.dumps(commande_data['articles'], ensure_ascii=False, default=str)
+        date_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        nb_articles = len(commande_data['articles'])
+        
+        if USE_POSTGRESQL:
+            cursor.execute('''
+                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            ''', (date_now, commande_data['utilisateur'], commande_data['equipe'], 
+                  articles_json, commande_data['total'], nb_articles))
+            commande_id = cursor.fetchone()[0]
+        else:
+            cursor.execute('''
+                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (date_now, commande_data['utilisateur'], commande_data['equipe'], 
+                  articles_json, commande_data['total'], nb_articles))
+            commande_id = cursor.lastrowid
+        
+        conn.commit()
+        conn.close()
+        return commande_id
+        
+    except Exception as e:
+        st.error(f"Erreur sauvegarde commande: {e}")
+        return None
+
+def migrate_database():
+    """Ajoute les nouvelles colonnes si elles n'existent pas"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            # Ajouter les colonnes de permissions si elles n'existent pas
+            permissions_columns = [
+                ('can_add_articles', 'BOOLEAN DEFAULT FALSE'),
+                ('can_view_stats', 'BOOLEAN DEFAULT FALSE'),
+                ('can_view_all_orders', 'BOOLEAN DEFAULT FALSE')
+            ]
+            
+            for column_name, column_type in permissions_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+                    conn.commit()
+                except:
+                    pass  # La colonne existe déjà
+                    
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            # Vérifier quelles colonnes existent
+            cursor.execute("PRAGMA table_info(users)")
+            existing_columns = [column[1] for column in cursor.fetchall()]
+            
+            # Ajouter les colonnes manquantes
+            new_columns = [
+                ('can_add_articles', 'INTEGER DEFAULT 0'),
+                ('can_view_stats', 'INTEGER DEFAULT 0'),
+                ('can_view_all_orders', 'INTEGER DEFAULT 0')
+            ]
+            
+            for column_name, column_type in new_columns:
+                if column_name not in existing_columns:
+                    cursor.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+                    conn.commit()
+        
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur migration base de données: {e}")
+
+# === GESTION UTILISATEURS ===
+def init_users_db():
+    """Initialise l'utilisateur admin par défaut"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users WHERE username = %s", ("admin",))
+            if not cursor.fetchone():
+                admin_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
+                cursor.execute("""
+                    INSERT INTO users (username, password, role, equipe, fonction, email)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ("admin", admin_password_hash, "admin", "DIRECTION", "Administrateur", "admin@flux-para.com"))
+                conn.commit()
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users WHERE username = ?", ("admin",))
+            if not cursor.fetchone():
+                admin_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
+                cursor.execute("""
+                    INSERT INTO users (username, password, role, equipe, fonction, email)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, ("admin", admin_password_hash, "admin", "DIRECTION", "Administrateur", "admin@flux-para.com"))
+                conn.commit()
+        
+        conn.close()
+        
+    except Exception as e:
+        print(f"Erreur init users: {e}")
+
+def authenticate_user(username, password):
+    """Authentifie un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT username, password, role, equipe, fonction, email 
+                FROM users WHERE username = %s
+            """, (username,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT username, password, role, equipe, fonction, email 
+                FROM users WHERE username = ?
+            """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            if password_hash == result[1]:
+                st.session_state.current_user = {
+                    'username': result[0],
+                    'role': result[2],
+                    'equipe': result[3] or '',
+                    'fonction': result[4] or '',
+                    'email': result[5] or ''
+                }
+                return True
+        
+        return False
+        
+    except Exception as e:
+        st.error(f"Erreur authentification: {e}")
+        return False
+
+def add_user(username, password, role='user', equipe='', fonction='', email=''):
+    """Ajoute un nouvel utilisateur"""
+    try:
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (username, password, role, equipe, fonction, email)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (username, password_hash, role, equipe, fonction, email))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (username, password, role, equipe, fonction, email)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (username, password_hash, role, equipe, fonction, email))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur ajout utilisateur: {e}")
+        return False
+
+# === FONCTIONS PANIER ===
+def convert_pandas_to_dict(article):
+    """Convertit une série pandas en dictionnaire"""
+    return {
+        'Nom': str(article['Nom']),
+        'Prix': float(article['Prix']),
+        'Description': str(article['Description'])
+    }
+
+def calculate_cart_total():
+    """Calcule le total du panier"""
+    return sum(float(item['Prix']) for item in st.session_state.cart)
+
+def add_to_cart(article, quantity=1):
+    """Ajoute un article au panier avec vérification budget"""
+    prix_ajout = float(article['Prix']) * quantity
+    nouveau_total = calculate_cart_total() + prix_ajout
+    
+    if nouveau_total > MAX_CART_AMOUNT:
+        budget_depasse = nouveau_total - MAX_CART_AMOUNT
+        
+        messages_budget = [
+            "Holà ! Tu veux ruiner le secteur FLUX/PARA ? 😅",
+            "Attention, comptable en panique ! 🤯",
+            "Le budget fait une crise cardiaque ! 💔",
+            "Budget FLUX/PARA K.O. ! 🥊",
+            "Erreur 404 : Budget not found ! 🔍"
+        ]
+        
+        message_rigolo = random.choice(messages_budget)
+        
+        st.session_state.budget_error = {
+            'message': message_rigolo,
+            'nouveau_total': nouveau_total,
+            'budget_max': MAX_CART_AMOUNT,
+            'depassement': budget_depasse,
+            'details': f"Vous tentez d'ajouter {prix_ajout:.2f}€, mais cela dépasserait le budget de {budget_depasse:.2f}€",
+            'timestamp': time.time()
+        }
+        
+        return False
+    
+    for _ in range(quantity):
+        st.session_state.cart.append(convert_pandas_to_dict(article))
+    
+    if quantity == 1:
+        st.toast(f"✅ {article['Nom']} ajouté au panier !", icon="🛒")
+    else:
+        st.toast(f"✅ {quantity}x {article['Nom']} ajoutés au panier !", icon="🛒")
+    
+    return True
+
+def grouper_articles_panier(cart):
+    """Groupe les articles du panier par nom"""
+    grouped = {}
+    
+    for article in cart:
+        nom = article['Nom']
+        if nom in grouped:
+            grouped[nom]['quantite'] += 1
+        else:
+            grouped[nom] = {
+                'article': article,
+                'quantite': 1
+            }
+    
+    return list(grouped.values())
+
+def remove_from_cart(article):
+    """Retire un article du panier"""
+    for i, item in enumerate(st.session_state.cart):
+        if item['Nom'] == article['Nom']:
+            st.session_state.cart.pop(i)
+            break
+
+def remove_all_from_cart(article):
+    """Retire tous les exemplaires d'un article du panier"""
+    st.session_state.cart = [item for item in st.session_state.cart if item['Nom'] != article['Nom']]
+
+# === FONCTIONS INTERFACE ===
+def init_session_state():
+    """Initialise les variables de session"""
+    if 'cart' not in st.session_state:
+        st.session_state.cart = []
+    if 'page' not in st.session_state:
+        st.session_state.page = "login"
+    if 'budget_error' not in st.session_state:
+        st.session_state.budget_error = None
+    if 'selected_category' not in st.session_state:
+        st.session_state.selected_category = None
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'current_user' not in st.session_state:
+        st.session_state.current_user = {}
+
+def show_budget_error_modal():
+    """Affiche les erreurs de budget avec animation"""
+    if st.session_state.budget_error:
+        error = st.session_state.budget_error
+        
+        # Vérifier si l'erreur n'est pas trop ancienne (5 secondes)
+        if time.time() - error['timestamp'] < 5:
+            st.markdown(f"""
+            <div class="budget-error">
+                <h3>🚨 {error['message']}</h3>
+                <p><strong>Détails:</strong> {error['details']}</p>
+                <p><strong>Budget maximum:</strong> {error['budget_max']:.2f}€</p>
+                <p><strong>Total tenté:</strong> {error['nouveau_total']:.2f}€</p>
+                <p><strong>Dépassement:</strong> {error['depassement']:.2f}€</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Effacer l'erreur si elle est trop ancienne
+            st.session_state.budget_error = None
+
+def show_cart_sidebar():
+    """Affiche le panier dans la sidebar"""
+    st.markdown("### 🛒 Panier FLUX/PARA")
+    
+    if not st.session_state.cart:
+        st.info("Panier vide")
+        return
+    
+    grouped_articles = grouper_articles_panier(st.session_state.cart)
+    
+    for group in grouped_articles:
+        article = group['article']
+        quantite = group['quantite']
+        prix_unitaire = float(article['Prix'])
+        prix_total = prix_unitaire * quantite
+        
+        with st.container():
+            nom_court = article['Nom'][:30] + "..." if len(article['Nom']) > 30 else article['Nom']
+            st.markdown(f"**{nom_court}**")
+            st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
+            
+            col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
+            
+            with col_minus:
+                if st.button("➖", key=f"sidebar_minus_{article['Nom']}", help="Réduire quantité"):
+                    remove_from_cart(article)
+                    st.rerun()
+            
+            with col_qty:
+                st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
+            
+            with col_plus:
+                if st.button("➕", key=f"sidebar_plus_{article['Nom']}", help="Augmenter quantité"):
+                    add_to_cart(article, 1)
+                    st.rerun()
+            
+            with col_del:
+                if st.button("🗑️", key=f"sidebar_delete_{article['Nom']}", help="Supprimer"):
+                    remove_all_from_cart(article)
+                    st.rerun()
+            
+            st.divider()
+    
+    total = calculate_cart_total()
+    budget_remaining = MAX_CART_AMOUNT - total
+    
+    if budget_remaining >= 0:
+        st.success(f"💰 **Total: {total:.2f}€**")
+        st.info(f"Budget restant: {budget_remaining:.2f}€")
+    else:
+        st.error(f"💰 **Total: {total:.2f}€**")
+        st.error(f"Dépassement: {abs(budget_remaining):.2f}€")
+    
+    if st.button("🛒 Voir le panier", use_container_width=True):
+        st.session_state.page = "cart"
+        st.rerun()
+    
+    if budget_remaining >= 0:
+        if st.button("✅ Valider commande", use_container_width=True):
+            st.session_state.page = "validation"
+            st.rerun()
+    else:
+        st.button("❌ Budget dépassé", disabled=True, use_container_width=True)
+
+def show_login():
+    """Page de connexion"""
+    st.markdown("### 🔐 Connexion FLUX/PARA")
+    
+    with st.form("login_form"):
+        username = st.text_input("👨‍💼 Nom d'utilisateur")
+        password = st.text_input("🔑 Mot de passe", type="password")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.form_submit_button("🚀 Se connecter", use_container_width=True):
+                if username and password:
+                    if authenticate_user(username, password):
+                        st.session_state.authenticated = True
+                        st.session_state.page = "catalogue"
+                        st.success(f"✅ Connexion réussie ! Bienvenue {username}")
+                        st.rerun()
+                    else:
+                        st.error("❌ Identifiants incorrects")
+                else:
+                    st.error("⚠️ Veuillez remplir tous les champs")
+        
+        with col2:
+            if st.form_submit_button("📝 Créer un compte", use_container_width=True):
+                st.session_state.page = "register"
+                st.rerun()
+
+def show_register():
+    """Page d'inscription"""
+    st.markdown("### 📝 Créer un compte")
+    
+    with st.form("register_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            username = st.text_input("👤 Nom d'utilisateur", placeholder="Votre nom d'utilisateur")
+            password = st.text_input("🔒 Mot de passe", type="password", placeholder="Votre mot de passe")
+            confirm_password = st.text_input("🔒 Confirmer mot de passe", type="password", placeholder="Confirmez votre mot de passe")
+        
+        with col2:
+            equipe = st.text_input("👷‍♂️ Équipe", placeholder="Ex: Équipe A, Équipe B...")
+            
+            # Liste déroulante pour les fonctions
+            fonction = st.selectbox(
+                "🔧 Fonction",
+                options=["", "Contremaître", "RTZ", "Technicien"],
+                index=0,
+                help="Sélectionnez votre fonction"
+            )
+        
+        submitted = st.form_submit_button("✅ Créer le compte", use_container_width=True)
+        
+        if submitted:
+            if not username or not password or not confirm_password:
+                st.error("❌ Veuillez remplir tous les champs obligatoires")
+            elif password != confirm_password:
+                st.error("❌ Les mots de passe ne correspondent pas")
+            elif len(password) < 6:
+                st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
+            elif not fonction:
+                st.error("❌ Veuillez sélectionner une fonction")
+            else:
+                # Créer le compte
+                if create_user(username, password, equipe, fonction):
+                    st.success("✅ Compte créé avec succès ! Vous pouvez maintenant vous connecter.")
+                    time.sleep(2)
+                    st.session_state.page = "login"
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la création du compte (nom d'utilisateur déjà pris ?)")
+    
+    st.markdown("---")
+    if st.button("← Retour à la connexion"):
+        st.session_state.page = "login"
+        st.rerun()
+
+def get_category_emoji(category):
+    """Retourne l'emoji correspondant à chaque catégorie"""
+    emoji_map = {
+        'Chaussures': '👟',
+        'Veste Blouson': '🧥', 
+        'Sous Veste': '👕',
+        'Veste Oxycoupeur': '🔥',
+        'Sécurité': '🦺',
+        'Gants': '🧤',
+        'Pantalon': '👖',
+        'Casque': '⛑️',
+        'Protection': '🛡️',
+        'Lunette': '🥽',
+        'Oxycoupage': '🔧',
+        'Outil': '🔨',
+        'Lampe': '💡',
+        'Marquage': '✏️'
+    }
+    return emoji_map.get(category, '📦')  # 📦 par défaut
+
+def show_catalogue():
+    """Affiche le catalogue des articles"""
+    st.markdown("### 🛡️ Catalogue FLUX/PARA")
+    
+    budget_used = calculate_cart_total()
+    budget_remaining = MAX_CART_AMOUNT - budget_used
+    
+    if budget_remaining > 0:
+        st.success(f"💰 Budget disponible: {budget_remaining:.2f}€ (secteur FLUX/PARA)")
+    else:
+        st.error(f"🚨 Budget FLUX/PARA dépassé de {abs(budget_remaining):.2f}€ !")
+    
+    with st.sidebar:
+        show_cart_sidebar()
+    
+    categories = articles_df['Description'].unique()
+    
+    if not hasattr(st.session_state, 'selected_category') or st.session_state.selected_category is None:
+        st.markdown("#### 🗂️ Sélectionner une catégorie")
+        
+        cols = st.columns(3)
+        for i, category in enumerate(categories):
+            with cols[i % 3]:
+                emoji = get_category_emoji(category)
+                if st.button(f"{emoji} {category}", key=f"cat_{category}", use_container_width=True):
+                    st.session_state.selected_category = category
+                    st.rerun()
+    else:
+        category = st.session_state.selected_category
+        emoji = get_category_emoji(category)
+        
+        if st.button("← Retour aux catégories"):
+            st.session_state.selected_category = None
+            st.rerun()
+        
+        st.markdown(f"#### {emoji} {category}")
+        
+        articles_category = articles_df[articles_df['Description'] == category]
+        
+        # Regrouper les articles par nom de base
+        articles_groupes = {}
+        for idx, article in articles_category.iterrows():
+            nom_complet = article['Nom']
+            
+            if 'taille' in nom_complet.lower():
+                taille_match = re.search(r'taille\s+([a-zA-Z0-9?]+)', nom_complet, re.IGNORECASE)
+                if taille_match:
+                    taille = taille_match.group(1)
+                    nom_base = re.sub(r'\s+taille\s+[a-zA-Z0-9?]+', '', nom_complet, flags=re.IGNORECASE).strip()
+                else:
+                    nom_base = nom_complet
+                    taille = "?"
+            else:
+                nom_base = nom_complet
+                taille = None
+            
+            if nom_base not in articles_groupes:
+                articles_groupes[nom_base] = {
+                    'prix': float(article['Prix']),
+                    'tailles': {},
+                    'article_simple': None
+                }
+            
+            if taille:
+                articles_groupes[nom_base]['tailles'][taille] = {'article': article, 'index': idx}
+            else:
+                articles_groupes[nom_base]['article_simple'] = {'article': article, 'index': idx}
+        
+        # Afficher les groupes
+        for nom_base, infos in articles_groupes.items():
+            with st.container():
+                st.markdown(f"### {nom_base}")
+                st.markdown(f"💰 **{infos['prix']:.2f}€**")
+                
+                if infos['tailles']:
+                    st.markdown("**Tailles disponibles:**")
+                    
+                    def sort_tailles_intelligent(item):
+                        taille = item[0]
+                        tailles_lettres = {'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5, 'XXL': 6, 'XXXL': 7}
+                        
+                        if taille in tailles_lettres:
+                            return (0, tailles_lettres[taille])
+                        
+                        try:
+                            return (1, int(taille))
+                        except (ValueError, TypeError):
+                            return (2, taille)
+                    
+                    tailles_triees = sorted(infos['tailles'].items(), key=sort_tailles_intelligent)
+                    
+                    for i in range(0, len(tailles_triees), 6):
+                        cols = st.columns(6)
+                        for j, (taille, data) in enumerate(tailles_triees[i:i+6]):
+                            with cols[j]:
+                                if st.button(f"🛒 {taille}", key=f"taille_{data['index']}", use_container_width=True):
+                                    add_to_cart(data['article'], 1)
+                                    st.toast(f"✅ Taille {taille} ajoutée !", icon="✅")
+                                    st.rerun()
+                else:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        quantity = st.number_input("Quantité", min_value=1, max_value=50, value=1, key=f"qty_{infos['article_simple']['index']}")
+                    with col2:
+                        if st.button("➕ Ajouter", key=f"add_{infos['article_simple']['index']}", use_container_width=True):
+                            add_to_cart(infos['article_simple']['article'], quantity)
+                            st.rerun()
+                
+                st.divider()
+
+def show_cart():
+    """Affiche le panier complet"""
+    st.markdown("### 🛒 Panier FLUX/PARA")
+    
+    if not st.session_state.cart:
+        st.info("🛒 Votre panier est vide")
+        if st.button("🛡️ Aller au catalogue"):
+            st.session_state.page = "catalogue"
+            st.rerun()
+        return
+    
+    grouped_articles = grouper_articles_panier(st.session_state.cart)
+    
+    for group in grouped_articles:
+        article = group['article']
+        quantite = group['quantite']
+        prix_unitaire = float(article['Prix'])
+        prix_total = prix_unitaire * quantite
+        
+        with st.container():
+            col1, col2, col3 = st.columns([4, 2, 2])
+            
+            with col1:
+                st.markdown(f"**{article['Nom']}**")
+                st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
+                
+            with col2:
+                st.markdown("**Quantité**")
+                col_minus, col_qty, col_plus = st.columns([1, 2, 1])
+                
+                with col_minus:
+                    if st.button("➖", key=f"minus_{article['Nom']}", use_container_width=True):
+                        remove_from_cart(article)
+                        st.rerun()
+                
+                with col_qty:
+                    st.markdown(f"<div style='text-align: center; padding: 8px; background: #f0f2f6; border-radius: 4px; font-weight: bold;'>{quantite}</div>", unsafe_allow_html=True)
+                
+                with col_plus:
+                    if st.button("➕", key=f"plus_{article['Nom']}", use_container_width=True):
+                        add_to_cart(article, 1)
+                        st.rerun()
+                        
+            with col3:
+                st.markdown("**Actions**")
+                if st.button("🗑️", key=f"delete_{article['Nom']}", help="Supprimer tout", use_container_width=True):
+                    remove_all_from_cart(article)
+                    st.rerun()
+            
+            st.divider()
+    
+    total = calculate_cart_total()
+    budget_remaining = MAX_CART_AMOUNT - total
+    
+    if budget_remaining >= 0:
+        st.success(f"### 💰 Total: {total:.2f}€")
+        st.info(f"💡 Budget restant: {budget_remaining:.2f}€")
+    else:
+        st.error(f"### 💰 Total: {total:.2f}€")
+        st.error(f"🚨 Dépassement budget: {abs(budget_remaining):.2f}€")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🛡️ Continuer mes achats", use_container_width=True):
+            st.session_state.page = "catalogue"
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Vider le panier", use_container_width=True):
+            st.session_state.cart = []
+            st.toast("🗑️ Panier vidé !", icon="✅")
+            st.rerun()
+    
+    with col3:
+        if budget_remaining >= 0:
+            if st.button("✅ Valider la commande", use_container_width=True):
+                st.session_state.page = "validation"
+                st.rerun()
+        else:
+            st.button("❌ Budget dépassé", disabled=True, use_container_width=True)
+
+def generate_commande_pdf(commande_data):
+    """Génère le PDF de commande pour l'utilisateur"""
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # En-tête
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            spaceAfter=30,
+            alignment=1  # Centré
+        )
+        
+        story.append(Paragraph("🛡️ COMMANDE FLUX/PARA", title_style))
+        story.append(Spacer(1, 20))
+        
+        # Informations commande
+        info_data = [
+            ['Date de commande:', datetime.now().strftime('%d/%m/%Y %H:%M')],
+            ['Contremaître:', commande_data.get('utilisateur', 'N/A')],
+            ['Équipe:', commande_data.get('equipe', 'N/A')],
+            ['Fonction:', commande_data.get('fonction', 'N/A')],
+            ['Date livraison souhaitée:', commande_data.get('date_livraison', 'N/A')]
+        ]
+        
+        info_table = Table(info_data, colWidths=[3*inch, 3*inch])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('BACKGROUND', (1, 0), (1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        story.append(info_table)
+        story.append(Spacer(1, 20))
+        
+        # Articles commandés
+        story.append(Paragraph("Articles commandés:", styles['Heading2']))
+        story.append(Spacer(1, 10))
+        
+        # Grouper les articles
+        grouped_articles = grouper_articles_panier(commande_data['articles'])
+        
+        # CORRECTION: Données du tableau avec vrais N° articles du CSV
+        table_data = [['N° Article', 'Article', 'Quantité', 'Prix unitaire', 'Prix total']]
+        
+        for group in grouped_articles:
+            article = group['article']
+            quantite = group['quantite']
+            prix_unitaire = float(article['Prix'])
+            prix_total = prix_unitaire * quantite
+            
+            # CORRECTION: Récupérer le vrai numéro d'article depuis le CSV
+            numero_article = get_numero_article_from_csv(article['Nom'])
+            
+            table_data.append([
+                str(numero_article),
+                article['Nom'],
+                str(quantite),
+                f"{prix_unitaire:.2f}€",
+                f"{prix_total:.2f}€"
+            ])
+        
+        # Total
+        total = commande_data['total']
+        table_data.append(['', '', '', 'TOTAL:', f"{total:.2f}€"])
+        
+        # Créer le tableau avec 5 colonnes
+        table = Table(table_data, colWidths=[1.5*inch, 3*inch, 1*inch, 1.5*inch, 1.5*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.lightgrey),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        story.append(table)
+        
+        # Commentaire si présent
+        if commande_data.get('commentaire'):
+            story.append(Spacer(1, 20))
+            story.append(Paragraph("Commentaire:", styles['Heading3']))
+            story.append(Paragraph(commande_data['commentaire'], styles['Normal']))
+        
+        # Construire le PDF
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+        
+    except Exception as e:
+        st.error(f"Erreur génération PDF commande: {e}")
+        return None
+
+def generate_bon_livraison_pdf(commande_data):
+    """Génère le PDF bon de livraison pour le magasin avec contrôle quantité"""
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # En-tête
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            spaceAfter=30,
+            alignment=1
+        )
+        
+        story.append(Paragraph("📦 BON DE LIVRAISON FLUX/PARA", title_style))
+        story.append(Spacer(1, 20))
+        
+        # Informations livraison
+        info_data = [
+            ['N° Commande:', f"CMD-{commande_data['id']}"],
+            ['Date commande:', datetime.now().strftime('%d/%m/%Y %H:%M')],
+            ['Demandeur:', commande_data.get('utilisateur', 'N/A')],
+            ['Équipe:', commande_data.get('equipe', 'N/A')],
+            ['Date livraison:', commande_data.get('date_livraison', 'N/A')],
+            ['Statut:', 'EN ATTENTE']
+        ]
+        
+        info_table = Table(info_data, colWidths=[3*inch, 3*inch])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightblue),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('BACKGROUND', (1, 0), (1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        story.append(info_table)
+        story.append(Spacer(1, 20))
+        
+        # Articles à préparer
+        story.append(Paragraph("Articles à préparer:", styles['Heading2']))
+        story.append(Spacer(1, 10))
+        
+        # Grouper les articles
+        grouped_articles = grouper_articles_panier(commande_data['articles'])
+        
+        # CORRECTION: Données du tableau avec vrais N° articles du CSV
+        table_data = [['N° Article', 'Article', 'Qté demandée', 'Qté préparée', 'Emplacement', 'Préparé', 'Observations']]
+        
+        for group in grouped_articles:
+            article = group['article']
+            quantite = group['quantite']
+            
+            # CORRECTION: Récupérer le vrai numéro d'article depuis le CSV
+            numero_article = get_numero_article_from_csv(article['Nom'])
+            
+            table_data.append([
+                str(numero_article),
+                article['Nom'],
+                str(quantite),
+                '____',  # Zone pour saisir quantité préparée
+                '____',  # Emplacement à remplir
+                '☐',     # Case à cocher
+                '____'   # Observations
+            ])
+        
+        # Créer le tableau avec 7 colonnes
+        table = Table(table_data, colWidths=[1*inch, 2.5*inch, 0.8*inch, 0.8*inch, 1*inch, 0.6*inch, 1.3*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+            ('FONTSIZE', (0, 1), (-1, -1), 9)
+        ]))
+        
+        story.append(table)
+        
+        # Instructions pour le magasin
+        story.append(Spacer(1, 30))
+        story.append(Paragraph("Instructions:", styles['Heading3']))
+        story.append(Paragraph("1. Vérifier la disponibilité de chaque article", styles['Normal']))
+        story.append(Paragraph("2. Indiquer la quantité réellement préparée", styles['Normal']))
+        story.append(Paragraph("3. Noter l'emplacement de stockage", styles['Normal']))
+        story.append(Paragraph("4. Cocher la case une fois l'article préparé", styles['Normal']))
+        story.append(Paragraph("5. Ajouter des observations si nécessaire", styles['Normal']))
+        
+        # Signature
+        story.append(Spacer(1, 30))
+        signature_data = [
+            ['Préparé par:', '____________________', 'Date:', '____________________'],
+            ['Signature:', '____________________', 'Heure:', '____________________']
+        ]
+        
+        signature_table = Table(signature_data, colWidths=[1.5*inch, 2*inch, 1*inch, 2*inch])
+        signature_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12)
+        ]))
+        
+        story.append(signature_table)
+        
+        # Construire le PDF
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+        
+    except Exception as e:
+        st.error(f"Erreur génération PDF bon de livraison: {e}")
+        return None
+
+def generate_bon_reception_pdf(commande_data, commande_id):
+    """Génère le PDF bon de réception pour celui qui reçoit la commande"""
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # En-tête
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            spaceAfter=30,
+            alignment=1  # Centré
+        )
+        
+        story.append(Paragraph("🛡️ BON DE RÉCEPTION FLUX/PARA", title_style))
+        story.append(Spacer(1, 20))
+        
+        # Informations commande
+        info_data = [
+            ['N° Commande:', f"CMD-{commande_id}"],
+            ['Date commande:', datetime.now().strftime('%d/%m/%Y %H:%M')],
+            ['Destinataire:', commande_data.get('utilisateur', 'N/A')],
+            ['Équipe:', commande_data.get('equipe', 'N/A')],
+            ['Date livraison:', commande_data.get('date_livraison', 'N/A')],
+            ['Statut:', 'À RÉCEPTIONNER']
+        ]
+        
+        info_table = Table(info_data, colWidths=[3*inch, 3*inch])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightblue),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('BACKGROUND', (1, 0), (1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        story.append(info_table)
+        story.append(Spacer(1, 20))
+        
+        # Articles à réceptionner
+        story.append(Paragraph("Articles à réceptionner:", styles['Heading2']))
+        story.append(Spacer(1, 10))
+        
+        # Grouper les articles
+        grouped_articles = grouper_articles_panier(commande_data['articles'])
+        
+        # Données du tableau pour réception
+        table_data = [['N° Article', 'Article', 'Qté commandée', 'Qté reçue', 'État', 'Conforme', 'Observations']]
+        
+        for group in grouped_articles:
+            article = group['article']
+            quantite = group['quantite']
+            
+            # Récupérer le vrai numéro d'article depuis le CSV
+            numero_article = get_numero_article_from_csv(article['Nom'])
+            
+            table_data.append([
+                str(numero_article),
+                article['Nom'],
+                str(quantite),
+                '____',  # Zone pour saisir quantité reçue
+                '____',  # État de l'article (Bon/Défaut)
+                '☐',     # CORRECTION: Case à cocher plus visible
+                '____'   # Observations
+            ])
+        
+        # Créer le tableau avec 7 colonnes
+        table = Table(table_data, colWidths=[1*inch, 2.5*inch, 0.8*inch, 0.8*inch, 1*inch, 0.6*inch, 1.3*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            # CORRECTION: Style spécial pour les cases à cocher
+            ('FONTSIZE', (5, 1), (5, -1), 14),  # Colonne "Conforme" plus grande
+            ('FONTNAME', (5, 1), (5, -1), 'Helvetica-Bold')  # Cases en gras
+        ]))
+        
+        story.append(table)
+        
+        # Instructions pour la réception
+        story.append(Spacer(1, 30))
+        story.append(Paragraph("Instructions de réception:", styles['Heading3']))
+        story.append(Paragraph("1. Vérifier que tous les articles commandés sont présents", styles['Normal']))
+        story.append(Paragraph("2. Contrôler l'état de chaque article (défauts, dommages)", styles['Normal']))
+        story.append(Paragraph("3. Indiquer la quantité réellement reçue", styles['Normal']))
+        story.append(Paragraph("4. Noter l'état : BON / DÉFAUT / MANQUANT", styles['Normal']))
+        story.append(Paragraph("5. Cocher 'Conforme' si l'article est acceptable", styles['Normal']))
+        story.append(Paragraph("6. Signaler tout problème dans les observations", styles['Normal']))
+        
+        # Section validation réception
+        story.append(Spacer(1, 30))
+        story.append(Paragraph("Validation de la réception:", styles['Heading3']))
+        
+        validation_data = [
+            ['Réceptionné par:', '____________________', 'Date:', '____________________'],
+            ['Fonction:', '____________________', 'Heure:', '____________________'],
+            ['Signature:', '____________________', 'Livraison complète:', '☐ OUI    ☐ NON'],  # CORRECTION: Cases plus espacées
+            ['Observations générales:', '', '', ''],
+            ['', '', '', ''],
+            ['', '', '', '']
+        ]
+        
+        validation_table = Table(validation_data, colWidths=[1.5*inch, 2*inch, 1*inch, 2*inch])
+        validation_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('SPAN', (1, 3), (3, 5)),  # Fusionner cellules pour observations
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            # CORRECTION: Style pour les cases OUI/NON
+            ('FONTSIZE', (3, 2), (3, 2), 12),  # Cases OUI/NON plus grandes
+            ('FONTNAME', (3, 2), (3, 2), 'Helvetica-Bold')
+        ]))
+        
+        story.append(validation_table)
+        
+        # Construire le PDF
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+        
+    except Exception as e:
+        st.error(f"Erreur génération PDF bon de réception: {e}")
+        return None
+
+def get_numero_article_from_csv(nom_article):
+    """Récupère le numéro d'article depuis le CSV en fonction du nom"""
+    try:
+        # Charger le CSV si pas déjà fait
+        if articles_df.empty:
+            return "N/A"
+        
+        # Chercher l'article par nom exact
+        article_row = articles_df[articles_df['Nom'] == nom_article]
+        
+        if not article_row.empty:
+            # CORRECTION: Récupérer la première colonne qui contient les références (40953, 40954, etc.)
+            premiere_colonne = articles_df.columns[0]  # 'Référence' dans votre cas
+            numero = article_row.iloc[0][premiere_colonne]
+            return str(numero) if pd.notna(numero) else "N/A"
+        else:
+            return "N/A"
+            
+    except Exception as e:
+        print(f"Erreur récupération numéro article: {e}")
+        return "N/A"
+
+def show_validation():
+    """Page de validation de commande avec message fixe pour PDFs"""
+    st.markdown("### ✅ Validation commande FLUX/PARA")
+    
+    if not st.session_state.cart:
+        st.warning("🛒 Votre panier est vide")
+        if st.button("← Retour au catalogue"):
+            st.session_state.page = "catalogue"
+            st.rerun()
+        return
+    
+    user_info = st.session_state.get('current_user', {})
+    
+    # Informations personnelles (non modifiables)
+    st.markdown("### 👤 Informations personnelles")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.text_input("👤 Contremaître", value=user_info.get('username', ''), disabled=True)
+        st.text_input("👷‍♂️ Équipe", value=user_info.get('equipe', ''), disabled=True)
+    
+    with col2:
+        st.text_input("🔧 Fonction", value=user_info.get('fonction', ''), disabled=True)
+    
+    # Informations commande
+    st.markdown("### 📋 Informations commande")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        commentaire_commande = st.text_area(
+            "💬 Commentaire de commande (optionnel)",
+            placeholder="Précisions sur la commande, urgence, etc.",
+            key="commentaire_validation"  # Clé unique pour éviter les conflits
+        )
+    
+    with col2:
+        date_livraison = st.date_input(
+            "📅 Date de livraison souhaitée",
+            value=datetime.now().date() + timedelta(days=7),
+            min_value=datetime.now().date(),
+            key="date_livraison_validation"  # Clé unique
+        )
+    
+    # Récapitulatif de la commande
+    st.markdown("### 📋 Récapitulatif de la commande")
+    
+    grouped_articles = grouper_articles_panier(st.session_state.cart)
+    total = 0
+    
+    for group in grouped_articles:
+        article = group['article']
+        quantite = group['quantite']
+        prix_unitaire = float(article['Prix'])
+        prix_total = prix_unitaire * quantite
+        total += prix_total
+        
+        st.markdown(f"• **{article['Nom']}** - {quantite}x - {prix_total:.2f}€")
+    
+    st.markdown(f"### 💰 Total: {total:.2f}€")
+    
+    # Boutons d'action
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("← Retour au panier", use_container_width=True):
+            st.session_state.page = "cart"
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Vider panier", use_container_width=True):
+            st.session_state.cart = []
+            st.session_state.page = "catalogue"
+            st.rerun()
+    
+    with col3:
+        if st.button("✅ Confirmer la commande", use_container_width=True, type="primary"):
+            if not user_info.get('username'):
+                st.error("❌ Erreur: utilisateur non connecté")
+                return
+            
+            # Préparer les données de commande
+            commande_data = {
+                'utilisateur': user_info.get('username', 'Inconnu'),
+                'equipe': user_info.get('equipe', ''),
+                'fonction': user_info.get('fonction', ''),
+                'email': user_info.get('email', ''),
+                'commentaire': commentaire_commande,
+                'date_livraison': str(date_livraison),
+                'articles': st.session_state.cart.copy(),
+                'total': total
+            }
+            
+            # Afficher le spinner pendant le traitement
+            with st.spinner('🔄 Traitement de la commande...'):
+                # 1. Sauvegarder en base de données
+                commande_id = save_commande_to_db(commande_data)
+                
+                if commande_id:
+                    # 2. Générer les PDFs
+                    pdf_commande = generate_commande_pdf(commande_data)
+                    pdf_reception = generate_bon_reception_pdf(commande_data, commande_id)
+                    
+                    if pdf_commande and pdf_reception:
+                        # CORRECTION: Stocker les PDFs dans session_state
+                        st.session_state.pdf_commande = pdf_commande
+                        st.session_state.pdf_reception = pdf_reception
+                        st.session_state.commande_id = commande_id
+                        st.session_state.pdfs_generated = True
+                        
+                        st.success("🎉 Commande validée avec succès !")
+                        st.balloons()
+                        
+                        # CORRECTION: Forcer le rechargement de la page
+                        time.sleep(1)  # Petit délai pour voir le message de succès
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de la génération des PDFs")
+                else:
+                    st.error("❌ Erreur lors de la sauvegarde")
+    
+    # CORRECTION: Afficher les boutons de téléchargement de manière persistante
+    if st.session_state.get('pdfs_generated', False):
+        st.markdown("---")
+        st.markdown("### 📄 Télécharger vos documents")
+        
+        col_pdf1, col_pdf2 = st.columns(2)
+        
+        with col_pdf1:
+            if 'pdf_commande' in st.session_state:
+                st.download_button(
+                    label="📄 Télécharger ma commande",
+                    data=st.session_state.pdf_commande.getvalue(),
+                    file_name=f"commande_FLUX_PARA_{st.session_state.commande_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        with col_pdf2:
+            if 'pdf_reception' in st.session_state:
+                st.download_button(
+                    label="📦 Télécharger bon de réception",
+                    data=st.session_state.pdf_reception.getvalue(),
+                    file_name=f"bon_reception_FLUX_PARA_{st.session_state.commande_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        st.markdown("---")
+        if st.button("✅ Terminer et vider panier", use_container_width=True, type="primary"):
+            # Nettoyer et rediriger
+            st.session_state.cart = []
+            st.session_state.pdfs_generated = False
+            if 'pdf_commande' in st.session_state:
+                del st.session_state.pdf_commande
+            if 'pdf_reception' in st.session_state:
+                del st.session_state.pdf_reception
+            if 'commande_id' in st.session_state:
+                del st.session_state.commande_id
+            st.session_state.page = "catalogue"
+            st.rerun()
+
+def show_mes_commandes():
+    """Page des commandes personnelles pour les contremaîtres"""
+    st.markdown("### 📊 Mes commandes")
+    
+    user_info = st.session_state.get('current_user', {})
+    username = user_info.get('username', '')
+    
+    if not username:
+        st.error("❌ Erreur: utilisateur non connecté")
+        return
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        # Récupérer SEULEMENT les commandes de ce contremaître
+        cursor.execute("""
+            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
+            FROM commandes 
+            WHERE contremaître = ?
+            ORDER BY date DESC
+        """, (username,))
+        
+        commandes = cursor.fetchall()
+        conn.close()
+        
+        if not commandes:
+            st.info("📭 Vous n'avez encore passé aucune commande")
+            if st.button("🛡️ Aller au catalogue"):
+                st.session_state.page = "catalogue"
+                st.rerun()
+            return
+        
+        # Statistiques personnelles
+        df_commandes = pd.DataFrame(commandes, columns=[
+            'id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles'
+        ])
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            total_commandes = len(df_commandes)
+            st.metric("🛡️ Mes commandes", total_commandes)
+        
+        with col2:
+            total_montant = df_commandes['total_prix'].sum()
+            st.metric("💰 Total dépensé", f"{total_montant:.2f}€")
+        
+        with col3:
+            moyenne_commande = df_commandes['total_prix'].mean()
+            st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
+        
+        st.markdown("---")
+        
+        # Afficher les commandes
+        for commande in commandes:
+            commande_id, date, contremaitre, equipe, articles_json, total_prix, nb_articles = commande
+            
+            with st.expander(f"🛡️ Commande #{commande_id} - {date} - {total_prix:.2f}€"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"**📅 Date:** {date}")
+                    st.markdown(f"**👷‍♂️ Équipe:** {equipe}")
+                
+                with col2:
+                    st.markdown(f"**💰 Total:** {total_prix:.2f}€")
+                    st.markdown(f"**📦 Nb articles:** {nb_articles}")
+                
+                # Afficher les articles
+                try:
+                    articles = json.loads(articles_json)
+                    grouped_articles = grouper_articles_panier(articles)
+                    
+                    st.markdown("**Articles commandés:**")
+                    for group in grouped_articles:
+                        article = group['article']
+                        quantite = group['quantite']
+                        prix_total = float(article['Prix']) * quantite
+                        st.markdown(f"• {article['Nom']} - Quantité: {quantite} - {prix_total:.2f}€")
+                        
+                except Exception as e:
+                    st.error(f"Erreur affichage articles: {e}")
+        
+    except Exception as e:
+        st.error(f"Erreur chargement commandes: {e}")
+
+def show_stats():
+    """Page de statistiques des commandes - Selon permissions"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Vérifier les droits
+    if not user_can_view_stats():
+        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation de voir les statistiques")
+        st.info("Contactez un administrateur pour obtenir cette permission.")
+        return
+    
+    # Titre selon le rôle
+    if user_info.get('role') == 'admin':
+        st.markdown("### 📊 Statistiques globales - Administration")
+    else:
+        st.markdown("### 📊 Statistiques des commandes")
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        # Récupérer toutes les commandes
+        cursor.execute("""
+            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
+            FROM commandes 
+            ORDER BY date DESC
+        """)
+        
+        commandes = cursor.fetchall()
+        conn.close()
+        
+        if not commandes:
+            st.info("📭 Aucune commande trouvée pour générer des statistiques")
+            return
+        
+        # Convertir en DataFrame pour faciliter l'analyse
+        df_commandes = pd.DataFrame(commandes, columns=[
+            'id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles'
+        ])
+        
+        # Convertir les dates
+        df_commandes['date'] = pd.to_datetime(df_commandes['date'])
+        df_commandes['mois'] = df_commandes['date'].dt.to_period('M')
+        
+        # === MÉTRIQUES GÉNÉRALES ===
+        st.markdown("### 📈 Vue d'ensemble")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_commandes = len(df_commandes)
+            st.metric("🛡️ Total commandes", total_commandes)
+        
+        with col2:
+            total_montant = df_commandes['total_prix'].sum()
+            st.metric("💰 Montant total", f"{total_montant:.2f}€")
+        
+        with col3:
+            moyenne_commande = df_commandes['total_prix'].mean()
+            st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
+        
+        with col4:
+            total_articles = df_commandes['nb_articles'].sum()
+            st.metric("📦 Total articles", total_articles)
+        
+        st.markdown("---")
+        
+        # === GRAPHIQUES ===
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Évolution des commandes par mois
+            st.markdown("#### 📅 Évolution mensuelle")
+            commandes_par_mois = df_commandes.groupby('mois').agg({
+                'id': 'count',
+                'total_prix': 'sum'
+            }).reset_index()
+            commandes_par_mois['mois_str'] = commandes_par_mois['mois'].astype(str)
+            
+            fig_evolution = px.line(
+                commandes_par_mois, 
+                x='mois_str', 
+                y='id',
+                title="Nombre de commandes par mois",
+                labels={'id': 'Nb commandes', 'mois_str': 'Mois'}
+            )
+            fig_evolution.update_layout(height=400)
+            st.plotly_chart(fig_evolution, use_container_width=True)
+        
+        with col2:
+            # Répartition par équipe
+            st.markdown("#### 👷‍♂️ Répartition par équipe")
+            commandes_par_equipe = df_commandes.groupby('equipe').agg({
+                'id': 'count',
+                'total_prix': 'sum'
+            }).reset_index()
+            
+            fig_equipes = px.pie(
+                commandes_par_equipe,
+                values='id',
+                names='equipe',
+                title="Commandes par équipe"
+            )
+            fig_equipes.update_layout(height=400)
+            st.plotly_chart(fig_equipes, use_container_width=True)
+        
+        # === MONTANTS PAR MOIS ===
+        st.markdown("#### 💰 Évolution des montants")
+        fig_montants = px.bar(
+            commandes_par_mois,
+            x='mois_str',
+            y='total_prix',
+            title="Montant total des commandes par mois",
+            labels={'total_prix': 'Montant (€)', 'mois_str': 'Mois'}
+        )
+        fig_montants.update_layout(height=400)
+        st.plotly_chart(fig_montants, use_container_width=True)
+        
+        # === TOP CONTREMAÎTRES ===
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 🏆 Top contremaîtres (nb commandes)")
+            top_contremaitres = df_commandes.groupby('contremaître').agg({
+                'id': 'count',
+                'total_prix': 'sum'
+            }).sort_values('id', ascending=False).head(10)
+            
+            for idx, (contremaitre, data) in enumerate(top_contremaitres.iterrows(), 1):
+                st.markdown(f"{idx}. **{contremaitre}** - {data['id']} commandes ({data['total_prix']:.2f}€)")
+        
+        with col2:
+            st.markdown("#### 💎 Top contremaîtres (montant)")
+            top_montants = df_commandes.groupby('contremaître').agg({
+                'id': 'count',
+                'total_prix': 'sum'
+            }).sort_values('total_prix', ascending=False).head(10)
+            
+            for idx, (contremaitre, data) in enumerate(top_montants.iterrows(), 1):
+                st.markdown(f"{idx}. **{contremaitre}** - {data['total_prix']:.2f}€ ({data['id']} commandes)")
+        
+        # === ANALYSE DES ARTICLES ===
+        st.markdown("---")
+        st.markdown("#### 📦 Analyse des articles les plus commandés")
+        
+        # Analyser tous les articles commandés
+        tous_articles = []
+        for articles_json in df_commandes['articles_json']:
+            try:
+                articles = json.loads(articles_json)
+                for article in articles:
+                    tous_articles.append({
+                        'nom': article['Nom'],
+                        'prix': float(article['Prix']),
+                        'categorie': article.get('Catégorie', 'Non définie')
+                    })
+            except:
+                continue
+        
+        if tous_articles:
+            df_articles = pd.DataFrame(tous_articles)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Articles les plus commandés
+                top_articles = df_articles['nom'].value_counts().head(10)
+                st.markdown("**🔥 Articles les plus commandés:**")
+                for idx, (article, count) in enumerate(top_articles.items(), 1):
+                    st.markdown(f"{idx}. {article} - {count}x")
+            
+            with col2:
+                # Répartition par catégorie
+                if 'categorie' in df_articles.columns:
+                    categories = df_articles['categorie'].value_counts()
+                    fig_categories = px.pie(
+                        values=categories.values,
+                        names=categories.index,
+                        title="Répartition par catégorie"
+                    )
+                    fig_categories.update_layout(height=300)
+                    st.plotly_chart(fig_categories, use_container_width=True)
+        
+        # === TABLEAU DÉTAILLÉ ===
+        st.markdown("---")
+        st.markdown("#### 📋 Tableau détaillé des commandes")
+        
+        # Préparer les données pour affichage
+        df_display = df_commandes[['id', 'date', 'contremaître', 'equipe', 'total_prix', 'nb_articles']].copy()
+        df_display['date'] = df_display['date'].dt.strftime('%d/%m/%Y %H:%M')
+        df_display.columns = ['ID', 'Date', 'Contremaître', 'Équipe', 'Montant (€)', 'Nb articles']
+        
+        st.dataframe(df_display, use_container_width=True)
+        
+        # === EXPORT ===
+        st.markdown("---")
+        st.markdown("#### 📥 Export des données")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Export CSV
+            csv_data = df_display.to_csv(index=False)
+            st.download_button(
+                label="📊 Télécharger CSV",
+                data=csv_data,
+                file_name=f"statistiques_commandes_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # Résumé statistique
+            if st.button("📈 Générer rapport PDF", use_container_width=True):
+                st.info("🚧 Fonctionnalité en développement")
+        
+    except Exception as e:
+        st.error(f"Erreur chargement statistiques: {e}")
+
+def show_historique():
+    """Page d'historique des commandes - Selon permissions"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Vérifier les droits
+    if not user_can_view_all_orders():
+        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation de voir toutes les commandes")
+        st.info("Contactez un administrateur pour obtenir cette permission.")
+        return
+    
+    # Titre selon le rôle
+    if user_info.get('role') == 'admin':
+        st.markdown("### 📊 Historique global - Administration")
+    else:
+        st.markdown("### 📊 Historique des commandes")
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        # Récupérer toutes les commandes
+        cursor.execute("""
+            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
+            FROM commandes 
+            ORDER BY date DESC
+        """)
+        
+        commandes = cursor.fetchall()
+        conn.close()
+        
+        if not commandes:
+            st.info("📭 Aucune commande trouvée")
+            return
+        
+        # Afficher les commandes
+        for commande in commandes:
+            commande_id, date, contremaitre, equipe, articles_json, total_prix, nb_articles = commande
+            
+            with st.expander(f"🛡️ Commande #{commande_id} - {contremaitre} ({equipe}) - {total_prix:.2f}€"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"**📅 Date:** {date}")
+                    st.markdown(f"**👨‍💼 Contremaître:** {contremaitre}")
+                    st.markdown(f"**👷‍♂️ Équipe:** {equipe}")
+                
+                with col2:
+                    st.markdown(f"**💰 Total:** {total_prix:.2f}€")
+                    st.markdown(f"**📦 Nb articles:** {nb_articles}")
+                
+                # Afficher les articles
+                try:
+                    articles = json.loads(articles_json)
+                    grouped_articles = grouper_articles_panier(articles)
+                    
+                    st.markdown("**Articles commandés:**")
+                    for group in grouped_articles:
+                        article = group['article']
+                        quantite = group['quantite']
+                        prix_total = float(article['Prix']) * quantite
+                        st.markdown(f"• {article['Nom']} - Quantité: {quantite} - {prix_total:.2f}€")
+                        
+                except Exception as e:
+                    st.error(f"Erreur affichage articles: {e}")
+        
+    except Exception as e:
+        st.error(f"Erreur chargement historique: {e}")
+
+def render_navigation():
+    """Navigation principale avec différenciation selon le rôle et permissions"""
+    user_info = st.session_state.get('current_user', {})
+    user_role = user_info.get('role', 'user')
+
+    if user_role == 'admin':
+        # Navigation complète pour admin
+        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+        
+        with col1:
+            if st.button("🛡️ Catalogue", use_container_width=True):
+                st.session_state.page = "catalogue"
+                st.rerun()
+                
+        with col2:
+            if st.button("🛒 Panier", use_container_width=True):
+                st.session_state.page = "cart"
+                st.rerun()
+        
+        with col3:
+            if st.button("📊 Historique", use_container_width=True):
+                st.session_state.page = "historique"
+                st.rerun()
+                
+        with col4:
+            if st.button("📈 Statistiques", use_container_width=True):
+                st.session_state.page = "stats"
+                st.rerun()
+                
+        with col5:
+            if st.button("🛠️ Articles", use_container_width=True):
+                st.session_state.page = "admin_articles"
+                st.rerun()
+        
+        with col6:
+            if st.button("👥 Utilisateurs", use_container_width=True):
+                st.session_state.page = "admin_users"
+                st.rerun()
+        
+        with col7:
+            if st.button("🛠️ Commandes", use_container_width=True):
+                st.session_state.page = "admin_commandes"
+                st.rerun()
+        
+        with col8:
+            if st.button("🚪 Déconnexion", use_container_width=True):
+                st.session_state.authenticated = False
+                st.session_state.current_user = {}
+                st.session_state.page = "login"
+                st.rerun()
+    
+    else:
+        # Navigation pour contremaîtres selon leurs permissions
+        buttons = []
+        
+        # Boutons de base
+        buttons.extend([
+            ("🛡️ Catalogue", "catalogue"),
+            ("🛒 Panier", "cart"),
+            ("📊 Mes commandes", "mes_commandes")
+        ])
+        
+        # Boutons selon permissions
+        if user_can_view_all_orders():
+            buttons.append(("📋 Historique", "historique"))
+        
+        if user_can_view_stats():
+            buttons.append(("📈 Statistiques", "stats"))
+        
+        if user_can_add_articles():
+            buttons.append(("➕ Articles", "admin_articles"))
+        
+        # Bouton déconnexion
+        buttons.append(("🚪 Déconnexion", "logout"))
+        
+        # Créer les colonnes dynamiquement
+        cols = st.columns(len(buttons))
+        
+        for i, (label, page) in enumerate(buttons):
+            with cols[i]:
+                if page == "logout":
+                    if st.button(label, use_container_width=True):
+                        st.session_state.authenticated = False
+                        st.session_state.current_user = {}
+                        st.session_state.page = "login"
+                        st.rerun()
+                else:
+                    if st.button(label, use_container_width=True):
+                        st.session_state.page = page
+                        st.rerun()
+
+def main():
+    """Fonction principale de l'application"""
+    init_database()
+    migrate_database()
+    init_users_db()
+    init_session_state()
+    
+    # Gestion des erreurs de budget
+    if hasattr(st.session_state, 'budget_error') and st.session_state.budget_error:
+        show_budget_error_modal()
+    
+    # Navigation selon l'état d'authentification
+    if not st.session_state.authenticated:
+        page = st.session_state.get('page', 'login')
+        
+        if page == "login":
+            show_login()
+        elif page == "register":
+            show_register()
+        else:
+            show_login()
+    else:
+        # En-tête
+        st.markdown("### 🛡️ FLUX/PARA Commander")
+        
+        # Afficher les infos utilisateur dans le sidebar
+        with st.sidebar:
+            user_info = st.session_state.get('current_user', {})
+            
+            # Icône selon la fonction
+            fonction_icons = {
+                'Contremaître': '👨‍💼',
+                'RTZ': '🔧',
+                'Technicien': '👨‍🔧',
+                'admin': '🔑'
+            }
+            
+            fonction = user_info.get('fonction', user_info.get('role', ''))
+            icon = fonction_icons.get(fonction, '👤')
+            
+            st.markdown(f"### {icon} {user_info.get('username', 'Utilisateur')}")
+            st.markdown(f"**Rôle:** {user_info.get('role', 'user')}")
+            if user_info.get('equipe'):
+                st.markdown(f"**Équipe:** {user_info.get('equipe')}")
+            if user_info.get('fonction'):
+                st.markdown(f"**Fonction:** {user_info.get('fonction')}")
+        
+        render_navigation()
+        
+        # Contenu selon la page sélectionnée
+        page = st.session_state.page
+        
+        if page == "catalogue":
+            show_catalogue()
+        elif page == "cart":
+            show_cart()
+        elif page == "validation":
+            show_validation()
+        elif page == "historique":
+            show_historique()
+        elif page == "stats":
+            show_stats()
+        elif page == "mes_commandes":
+            show_mes_commandes()
+        elif page == "admin_articles":
+            show_admin_articles()
+        elif page == "admin_users":
+            show_admin_users()
+        elif page == "admin_commandes":
+            show_admin_commandes()  # Nouvelle page
+        else:
+            show_catalogue()
+
+def show_admin_articles():
+    """Page de gestion des articles - ADMIN et contremaîtres autorisés"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Vérifier les droits
+    if not user_can_add_articles():
+        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation d'ajouter des articles")
+        st.info("Contactez un administrateur pour obtenir cette permission.")
+        return
+    
+    # Titre différent selon le rôle
+    if user_info.get('role') == 'admin':
+        st.markdown("### 🛠️ Gestion des articles - Administration")
+    else:
+        st.markdown("### ➕ Ajouter des articles")
+    
+    # Onglets selon les permissions
+    if user_info.get('role') == 'admin':
+        # Admin : tous les onglets
+        tab1, tab2, tab3 = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📁 Import CSV"])
+    else:
+        # Contremaître : seulement ajout individuel
+        tab1, tab2 = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article"])
+        tab3 = None
+    
+    with tab1:
+        # Afficher le catalogue actuel (lecture seule pour contremaîtres)
+        st.markdown("#### 📋 Articles actuels")
+        
+        if not articles_df.empty:
+            # Statistiques rapides
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📦 Total articles", len(articles_df))
+            with col2:
+                if 'Prix' in articles_df.columns:
+                    prix_moyen = articles_df['Prix'].astype(float).mean()
+                    st.metric("💰 Prix moyen", f"{prix_moyen:.2f}€")
+            with col3:
+                if 'Catégorie' in articles_df.columns:
+                    nb_categories = articles_df['Catégorie'].nunique()
+                    st.metric("🏷️ Catégories", nb_categories)
+            
+            # Tableau
+            st.markdown("**Catalogue complet:**")
+            st.dataframe(articles_df, use_container_width=True)
+            
+            # Bouton téléchargement seulement pour admin
+            if user_info.get('role') == 'admin':
+                csv_data = articles_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Télécharger CSV actuel",
+                    data=csv_data,
+                    file_name=f"articles_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.warning("⚠️ Aucun article trouvé dans le catalogue")
+    
+    with tab2:
+        # Formulaire d'ajout d'article (accessible aux deux)
+        st.markdown("#### ➕ Ajouter un nouvel article")
+        
+        # Message pour contremaîtres
+        if user_info.get('role') != 'admin':
+            st.info("🛠️ Vous avez l'autorisation d'ajouter des articles au catalogue.")
+        
+        # ... reste du code du formulaire identique ...
+        with st.form("add_article_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Récupérer la prochaine référence disponible
+                if not articles_df.empty and 'Référence' in articles_df.columns:
+                    try:
+                        max_ref = articles_df['Référence'].astype(int).max()
+                        next_ref = max_ref + 1
+                    except:
+                        next_ref = 50000
+                else:
+                    next_ref = 40000
+                
+                reference = st.number_input("🔢 Référence", value=next_ref, min_value=1)
+                nom = st.text_input("📝 Nom de l'article", placeholder="Ex: Chaussure de sécurité JALAS Taille 42")
+                prix = st.number_input("💰 Prix (€)", min_value=0.0, step=0.01, format="%.2f")
+            
+            with col2:
+                # Récupérer les catégories existantes
+                if not articles_df.empty and 'Catégorie' in articles_df.columns:
+                    categories_existantes = articles_df['Catégorie'].dropna().unique().tolist()
+                else:
+                    categories_existantes = []
+                
+                # Option pour nouvelle catégorie ou existante
+                nouvelle_categorie = st.checkbox("Créer une nouvelle catégorie")
+                
+                if nouvelle_categorie:
+                    categorie = st.text_input("🏷️ Nouvelle catégorie", placeholder="Ex: Chaussures de sécurité")
+                else:
+                    if categories_existantes:
+                        categorie = st.selectbox("🏷️ Catégorie", categories_existantes)
+                    else:
+                        categorie = st.text_input("🏷️ Catégorie", placeholder="Ex: Chaussures de sécurité")
+                
+                description = st.text_area("📄 Description (optionnel)", placeholder="Description détaillée de l'article")
+            
+            submitted = st.form_submit_button("✅ Ajouter l'article", use_container_width=True)
+            
+            if submitted:
+                if nom and prix > 0:
+                    # Ajouter l'article au CSV
+                    nouvel_article = {
+                        'Référence': reference,
+                        'Nom': nom,
+                        'Prix': prix,
+                        'Catégorie': categorie,
+                        'Description': description
+                    }
+                    
+                    if add_article_to_csv(nouvel_article):
+                        st.success(f"✅ Article '{nom}' ajouté avec succès !")
+                        st.balloons()
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de l'ajout de l'article")
+                else:
+                    st.error("❌ Veuillez remplir tous les champs obligatoires")
+    
+    # Onglet import seulement pour admin
+    if tab3 and user_info.get('role') == 'admin':
+        with tab3:
+            # ... code import CSV identique ...
+            pass
+
+def add_article_to_csv(nouvel_article):
+    """Ajoute un article au fichier CSV"""
+    try:
+        global articles_df
+        
+        # Charger le CSV actuel
+        try:
+            df_actuel = pd.read_csv('articles.csv')
+        except FileNotFoundError:
+            # Créer un nouveau DataFrame si le fichier n'existe pas
+            df_actuel = pd.DataFrame(columns=['Référence', 'Nom', 'Prix', 'Catégorie', 'Description'])
+        
+        # Ajouter le nouvel article
+        nouveau_df = pd.concat([df_actuel, pd.DataFrame([nouvel_article])], ignore_index=True)
+        
+        # Sauvegarder
+        nouveau_df.to_csv('articles.csv', index=False)
+        
+        # Recharger le cache
+        st.cache_data.clear()
+        articles_df = load_articles()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur ajout article: {e}")
+        return False
+
+
+def import_articles_from_csv(new_articles_df):
+    """Importe plusieurs articles depuis un DataFrame"""
+    try:
+        global articles_df
+        
+        # Charger le CSV actuel
+        try:
+            df_actuel = pd.read_csv('articles.csv')
+        except FileNotFoundError:
+            df_actuel = pd.DataFrame(columns=['Référence', 'Nom', 'Prix', 'Catégorie', 'Description'])
+        
+        # Fusionner les DataFrames
+        df_combine = pd.concat([df_actuel, new_articles_df], ignore_index=True)
+        
+        # Supprimer les doublons basés sur la référence
+        df_combine = df_combine.drop_duplicates(subset=['Référence'], keep='last')
+        
+        # Sauvegarder
+        df_combine.to_csv('articles.csv', index=False)
+        
+        # Recharger le cache
+        st.cache_data.clear()
+        articles_df = load_articles()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur import articles: {e}")
+        return False
+
+def show_admin_users():
+    """Page de gestion des utilisateurs - ADMIN SEULEMENT"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Vérifier les droits admin
+    if user_info.get('role') != 'admin':
+        st.error("🚫 Accès refusé - Réservé aux administrateurs")
+        return
+    
+    st.markdown("### 👥 Gestion des utilisateurs - Administration")
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        # Récupérer tous les utilisateurs avec leurs permissions (sans email)
+        cursor.execute("""
+            SELECT id, username, role, equipe, fonction, 
+                   can_add_articles, can_view_stats, can_view_all_orders
+            FROM users 
+            ORDER BY username
+        """)
+        
+        users = cursor.fetchall()
+        
+        if not users:
+            st.info("👥 Aucun utilisateur trouvé")
+            conn.close()
+            return
+        
+        st.markdown("#### 👥 Liste des utilisateurs et permissions")
+        
+        # Afficher chaque utilisateur avec options
+        for user in users:
+            user_id, username, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders = user
+            
+            with st.expander(f"👤 {username} ({role}) - {fonction or 'Fonction non définie'}"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**📋 Informations:**")
+                    st.markdown(f"• **ID:** {user_id}")
+                    st.markdown(f"• **Nom:** {username}")
+                    st.markdown(f"• **Rôle:** {role}")
+                    st.markdown(f"• **Équipe:** {equipe or 'Non définie'}")
+                    st.markdown(f"• **Fonction:** {fonction or 'Non définie'}")
+                
+                with col2:
+                    if role != 'admin':  # Les admins ont déjà tous les droits
+                        st.markdown("**🔐 Permissions actuelles:**")
+                        
+                        # Permissions actuelles
+                        current_permissions = {
+                            'can_add_articles': bool(can_add_articles) if can_add_articles is not None else False,
+                            'can_view_stats': bool(can_view_stats) if can_view_stats is not None else False,
+                            'can_view_all_orders': bool(can_view_all_orders) if can_view_all_orders is not None else False
+                        }
+                        
+                        # Afficher les permissions actuelles avec icônes selon la fonction
+                        fonction_icon = {
+                            'Contremaître': '👨‍💼',
+                            'RTZ': '🔧',
+                            'Technicien': '👨‍🔧'
+                        }.get(fonction, '👤')
+                        
+                        st.markdown(f"**{fonction_icon} {fonction}**")
+                        st.markdown(f"• 🛠️ Ajouter articles: {'✅' if current_permissions['can_add_articles'] else '❌'}")
+                        st.markdown(f"• 📈 Voir statistiques: {'✅' if current_permissions['can_view_stats'] else '❌'}")
+                        st.markdown(f"• 📊 Voir toutes commandes: {'✅' if current_permissions['can_view_all_orders'] else '❌'}")
+                    else:
+                        st.info("🔑 **Administrateur**\nTous droits accordés")
+                
+                with col3:
+                    if role != 'admin':
+                        st.markdown("**⚙️ Modifier permissions:**")
+                        
+                        # Cases à cocher pour les permissions
+                        new_add_articles = st.checkbox(
+                            "🛠️ Peut ajouter des articles",
+                            value=current_permissions['can_add_articles'],
+                            key=f"add_articles_{user_id}"
+                        )
+                        
+                        new_view_stats = st.checkbox(
+                            "📈 Peut voir les statistiques",
+                            value=current_permissions['can_view_stats'],
+                            key=f"view_stats_{user_id}"
+                        )
+                        
+                        new_view_all_orders = st.checkbox(
+                            "📊 Peut voir toutes les commandes",
+                            value=current_permissions['can_view_all_orders'],
+                            key=f"view_all_orders_{user_id}"
+                        )
+                        
+                        # Vérifier si des changements ont été faits
+                        new_permissions = {
+                            'can_add_articles': new_add_articles,
+                            'can_view_stats': new_view_stats,
+                            'can_view_all_orders': new_view_all_orders
+                        }
+                        
+                        if new_permissions != current_permissions:
+                            if st.button(f"💾 Sauvegarder", key=f"save_{user_id}", use_container_width=True):
+                                if update_user_permissions(user_id, new_permissions):
+                                    st.success(f"✅ Permissions mises à jour pour {username}")
+                                    time.sleep(1)
+                                    st.rerun()
+                    else:
+                        st.markdown("**🔑 Administrateur**")
+                        st.info("Permissions complètes")
+        
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur chargement utilisateurs: {e}")
+
+
+def update_user_permission(user_id, can_add_articles):
+    """Met à jour la permission d'ajout d'articles pour un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE users 
+            SET can_add_articles = ? 
+            WHERE id = ?
+        """, (can_add_articles, user_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour permission: {e}")
+        return False
+
+
+def user_can_add_articles():
+    """Vérifie si l'utilisateur actuel peut ajouter des articles"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Admin peut toujours ajouter
+    if user_info.get('role') == 'admin':
+        return True
+    
+    # Vérifier la permission spécifique
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT can_add_articles 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+def user_can_view_stats():
+    """Vérifie si l'utilisateur peut voir les statistiques"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Admin peut toujours voir
+    if user_info.get('role') == 'admin':
+        return True
+    
+    # Vérifier la permission spécifique
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT can_view_stats 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+
+def user_can_view_all_orders():
+    """Vérifie si l'utilisateur peut voir toutes les commandes"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Admin peut toujours voir
+    if user_info.get('role') == 'admin':
+        return True
+    
+    # Vérifier la permission spécifique
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT can_view_all_orders 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+
+def update_user_permissions(user_id, permissions):
+    """Met à jour toutes les permissions d'un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE users 
+            SET can_add_articles = ?, 
+                can_view_stats = ?, 
+                can_view_all_orders = ?
+            WHERE id = ?
+        """, (
+            permissions['can_add_articles'],
+            permissions['can_view_stats'], 
+            permissions['can_view_all_orders'],
+            user_id
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour permissions: {e}")
+        return False
+
+def create_user(username, password, equipe=None, fonction=None):
+    """Crée un nouvel utilisateur"""
+    try:
+        # Hasher le mot de passe
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        # Insérer le nouvel utilisateur (sans email)
+        cursor.execute("""
+            INSERT INTO users (username, password, equipe, fonction) 
+            VALUES (?, ?, ?, ?)
+        """, (username, password_hash, equipe, fonction))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur création utilisateur: {e}")
+        return False
+
+def show_admin_commandes():
+    """Interface d'administration des commandes"""
+    st.markdown("### 🛠️ Administration des Commandes")
+    
+    # Vérifier les permissions
+    if not st.session_state.get('current_user', {}).get('role') == 'admin':
+        st.error("❌ Accès refusé - Administrateur requis")
+        return
+    
+    # Charger toutes les commandes
+    commandes = load_all_orders()
+    
+    if commandes.empty:
+        st.info("📋 Aucune commande trouvée")
+        return
+    
+    # Afficher les modals en premier si nécessaire
+    if hasattr(st.session_state, 'delete_commande_id'):
+        show_delete_confirmation_modal()
+        return  # Arrêter l'affichage du reste
+    
+    if hasattr(st.session_state, 'edit_commande_id'):
+        show_edit_commande_modal()
+        return  # Arrêter l'affichage du reste
+    
+    # Filtres
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Filtre par équipe
+        equipes = ['Toutes'] + list(commandes['equipe'].unique())
+        equipe_filter = st.selectbox("🏢 Filtrer par équipe", equipes)
+    
+    with col2:
+        # Filtre par date
+        date_filter = st.date_input("📅 Filtrer par date", value=None)
+    
+    with col3:
+        # Recherche par contremaître
+        search_term = st.text_input("🔍 Rechercher contremaître")
+    
+    # Appliquer les filtres
+    filtered_commandes = commandes.copy()
+    
+    if equipe_filter != 'Toutes':
+        filtered_commandes = filtered_commandes[filtered_commandes['equipe'] == equipe_filter]
+    
+    if search_term:
+        filtered_commandes = filtered_commandes[
+            filtered_commandes['contremaître'].str.contains(search_term, case=False, na=False)
+        ]
+    
+    if date_filter:
+        # Convertir la date de filtre en string pour comparaison
+        date_str = date_filter.strftime('%Y-%m-%d')
+        filtered_commandes = filtered_commandes[
+            filtered_commandes['date'].str.contains(date_str, na=False)
+        ]
+    
+    # Affichage des commandes avec actions
+    st.markdown("#### 📋 Liste des Commandes")
+    st.markdown(f"**{len(filtered_commandes)} commande(s) trouvée(s)**")
+    
+    for idx, commande in filtered_commandes.iterrows():
+        with st.expander(f"🛒 Commande #{commande['id']} - {commande['contremaître']} ({commande['date']})"):
+            
+            # Informations de la commande
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown(f"**👤 Contremaître:** {commande['contremaître']}")
+                st.markdown(f"**🏢 Équipe:** {commande['equipe']}")
+            
+            with col2:
+                st.markdown(f"**📅 Date:** {commande['date']}")
+                st.markdown(f"**💰 Total:** {commande['total_prix']:.2f}€")
+            
+            with col3:
+                st.markdown(f"**📦 Articles:** {commande['nb_articles']}")
+            
+            # Articles de la commande
+            try:
+                articles = json.loads(commande['articles_json'])
+                st.markdown("**📋 Détail des articles:**")
+                
+                # Tableau des articles
+                articles_df = pd.DataFrame(articles)
+                if not articles_df.empty:
+                    # Sélectionner les colonnes disponibles
+                    display_columns = []
+                    if 'Nom' in articles_df.columns:
+                        display_columns.append('Nom')
+                    if 'Prix' in articles_df.columns:
+                        display_columns.append('Prix')
+                    if 'Quantité' in articles_df.columns:
+                        display_columns.append('Quantité')
+                    
+                    if display_columns:
+                        st.dataframe(
+                            articles_df[display_columns],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.dataframe(articles_df, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f"❌ Erreur lors du chargement des articles: {e}")
+            
+            # Actions d'administration
+            st.markdown("---")
+            st.markdown("**🛠️ Actions d'administration:**")
+            
+            col_actions = st.columns(3)
+            
+            with col_actions[0]:
+                if st.button(f"✏️ Modifier", key=f"edit_{commande['id']}", use_container_width=True):
+                    st.session_state.edit_commande_id = commande['id']
+                    st.rerun()
+            
+            with col_actions[1]:
+                if st.button(f"📧 Renvoyer Email", key=f"resend_{commande['id']}", use_container_width=True):
+                    with st.spinner("Envoi en cours..."):
+                        if resend_order_email(commande):
+                            st.success("✅ Email renvoyé avec succès")
+                        else:
+                            st.error("❌ Erreur lors de l'envoi")
+            
+            with col_actions[2]:
+                if st.button(f"🗑️ Supprimer", key=f"delete_{commande['id']}", type="secondary", use_container_width=True):
+                    st.session_state.delete_commande_id = commande['id']
+                    st.rerun()
+
+
+def show_delete_confirmation_modal():
+    """Modal de confirmation de suppression"""
+    commande_id = st.session_state.delete_commande_id
+    
+    st.markdown("---")
+    st.error("⚠️ **ATTENTION - Suppression de commande**")
+    
+    # Créer un conteneur centré pour le modal
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown(f"### 🗑️ Supprimer la commande #{commande_id}")
+        st.markdown("**Êtes-vous sûr de vouloir supprimer cette commande ?**")
+        st.warning("⚠️ Cette action est **IRRÉVERSIBLE** !")
+        
+        # Boutons de confirmation
+        col_confirm1, col_confirm2 = st.columns(2)
+        
+        with col_confirm1:
+            if st.button("✅ OUI, SUPPRIMER", type="primary", use_container_width=True, key="confirm_delete"):
+                if delete_commande(commande_id):
+                    st.success(f"✅ Commande #{commande_id} supprimée avec succès")
+                    del st.session_state.delete_commande_id
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la suppression")
+        
+        with col_confirm2:
+            if st.button("❌ ANNULER", use_container_width=True, key="cancel_delete"):
+                del st.session_state.delete_commande_id
+                st.rerun()
+
+
+def show_edit_commande_modal():
+    """Modal d'édition de commande"""
+    commande_id = st.session_state.edit_commande_id
+    
+    st.markdown("---")
+    st.info(f"✏️ **Modification de la commande #{commande_id}**")
+    
+    # Charger les détails de la commande
+    commande = get_commande_by_id(commande_id)
+    
+    if commande is None:
+        st.error("❌ Commande introuvable")
+        del st.session_state.edit_commande_id
+        return
+    
+    # Formulaire d'édition
+    with st.form(f"edit_form_{commande_id}", clear_on_submit=False):
+        st.markdown("### 📝 Modifier les informations")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_contremaître = st.text_input("👤 Contremaître", value=commande['contremaître'])
+            new_equipe = st.text_input("🏢 Équipe", value=commande['equipe'])
+        
+        with col2:
+            # Convertir la date string en objet date
+            try:
+                if isinstance(commande['date'], str):
+                    date_obj = pd.to_datetime(commande['date']).date()
+                else:
+                    date_obj = commande['date']
+            except:
+                date_obj = datetime.now().date()
+            
+            new_date = st.date_input("📅 Date", value=date_obj)
+        
+        # Articles - Affichage et modification simplifiée
+        st.markdown("### 📋 Articles")
+        
+        try:
+            articles = json.loads(commande['articles_json'])
+            
+            # Afficher les articles actuels
+            st.markdown("**Articles actuels :**")
+            articles_df = pd.DataFrame(articles)
+            if not articles_df.empty:
+                st.dataframe(articles_df, use_container_width=True, hide_index=True)
+            
+            # Zone de modification JSON (pour utilisateurs avancés)
+            with st.expander("🔧 Modification avancée (JSON)"):
+                articles_json = st.text_area(
+                    "Articles JSON", 
+                    value=commande['articles_json'],
+                    height=200,
+                    help="Format JSON des articles - Modification pour utilisateurs avancés uniquement"
+                )
+        except:
+            st.error("❌ Erreur lors du chargement des articles")
+            articles_json = commande['articles_json']
+        
+        # Boutons de soumission
+        col_submit1, col_submit2 = st.columns(2)
+        
+        with col_submit1:
+            submitted = st.form_submit_button("✅ SAUVEGARDER", type="primary", use_container_width=True)
+            if submitted:
+                if update_commande(commande_id, new_contremaître, new_equipe, new_date, articles_json):
+                    st.success("✅ Commande mise à jour avec succès")
+                    del st.session_state.edit_commande_id
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la mise à jour")
+        
+        with col_submit2:
+            cancelled = st.form_submit_button("❌ ANNULER", use_container_width=True)
+            if cancelled:
+                del st.session_state.edit_commande_id
+                st.rerun()
+
+
+def delete_commande(commande_id):
+    """Supprime une commande de la base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM commandes WHERE id = ?", (commande_id,))
+        conn.commit()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur suppression: {e}")
+        return False
+
+
+def get_commande_by_id(commande_id):
+    """Récupère une commande par son ID"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM commandes WHERE id = ?", (commande_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            columns = ['id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles']
+            return dict(zip(columns, result))
+        
+        return None
+        
+    except Exception as e:
+        st.error(f"Erreur récupération commande: {e}")
+        return None
+
+
+def update_commande(commande_id, contremaître, equipe, date, articles_json):
+    """Met à jour une commande"""
+    try:
+        # Valider le JSON
+        articles = json.loads(articles_json)
+        total_prix = sum(float(article.get('Prix', 0)) * int(article.get('Quantité', 0)) for article in articles)
+        nb_articles = sum(int(article.get('Quantité', 0)) for article in articles)
+        
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE commandes 
+            SET contremaître = ?, equipe = ?, date = ?, articles_json = ?, total_prix = ?, nb_articles = ?
+            WHERE id = ?
+        """, (contremaître, equipe, str(date), articles_json, total_prix, nb_articles, commande_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return True
+        
+    except json.JSONDecodeError:
+        st.error("❌ Format JSON invalide")
+        return False
+    except Exception as e:
+        st.error(f"Erreur mise à jour: {e}")
+        return False
+
+
+def resend_order_email(commande):
+    """Renvoie l'email de commande"""
+    try:
+        articles = json.loads(commande['articles_json'])
+        
+        # Utiliser la fonction d'envoi existante
+        return send_order_email(
+            commande['contremaître'],
+            commande['equipe'], 
+            articles,
+            commande['total_prix']
+        )
+        
+    except Exception as e:
+        st.error(f"Erreur renvoi email: {e}")
+        return False
+
+
+def regenerate_order_pdf(commande):
+    """Régénère le PDF de commande"""
+    try:
+        articles = json.loads(commande['articles_json'])
+        
+        # Utiliser la fonction de génération PDF existante
+        pdf_buffer = generate_order_pdf(
+            commande['contremaître'],
+            commande['equipe'],
+            articles,
+            commande['total_prix']
+        )
+        
+        return pdf_buffer is not None
+        
+    except Exception as e:
+        st.error(f"Erreur génération PDF: {e}")
+        return False
+
+def load_all_orders():
+    """Charge toutes les commandes depuis la base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        # Charger toutes les commandes
+        df = pd.read_sql_query("""
+            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
+            FROM commandes 
+            ORDER BY date DESC
+        """, conn)
+        
+        conn.close()
+        return df
+        
+    except Exception as e:
+        st.error(f"Erreur chargement commandes: {e}")
+        return pd.DataFrame()
+
+if __name__ == "__main__":
+    main()
