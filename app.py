@@ -48,13 +48,80 @@ else:
 # === CHARGEMENT DES DONNÉES ===
 @st.cache_data
 def load_articles():
-    """Charge les articles depuis le fichier CSV"""
+    """Charge les articles depuis le fichier CSV avec gestion d'erreurs"""
     try:
-        df = pd.read_csv('articles.csv')
+        # Essayer de lire le CSV avec gestion d'erreurs
+        df = pd.read_csv('articles.csv', on_bad_lines='skip', encoding='utf-8')
+        
+        # Vérifier que les colonnes essentielles existent
+        required_columns = ['Nom', 'Prix', 'Description']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            st.error(f"❌ Colonnes manquantes dans articles.csv: {missing_columns}")
+            return create_sample_articles()
+        
+        # Nettoyer les données
+        df = df.dropna(subset=['Nom', 'Prix'])
+        df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
+        df = df.dropna(subset=['Prix'])
+        
+        st.success(f"✅ {len(df)} articles chargés avec succès")
         return df
+        
     except FileNotFoundError:
         st.error("❌ Fichier articles.csv introuvable")
-        return pd.DataFrame()
+        return create_sample_articles()
+    except pd.errors.ParserError as e:
+        st.error(f"❌ Erreur de format CSV: {e}")
+        st.info("💡 Tentative de lecture avec paramètres alternatifs...")
+        
+        try:
+            # Essayer avec d'autres paramètres
+            df = pd.read_csv('articles.csv', 
+                           sep=';',  # Essayer avec point-virgule
+                           on_bad_lines='skip',
+                           encoding='utf-8')
+            st.success(f"✅ {len(df)} articles chargés (format alternatif)")
+            return df
+        except:
+            st.error("❌ Impossible de lire le fichier CSV")
+            return create_sample_articles()
+    except Exception as e:
+        st.error(f"❌ Erreur inattendue: {e}")
+        return create_sample_articles()
+
+
+def create_sample_articles():
+    """Crée des articles d'exemple si le CSV ne peut pas être lu"""
+    st.warning("⚠️ Utilisation d'articles d'exemple")
+    
+    sample_data = {
+        'Nom': [
+            'Chaussures de sécurité JALAS Taille 42',
+            'Veste Blouson FLUX/PARA Taille L',
+            'Gants de protection Taille 9',
+            'Casque de sécurité blanc',
+            'Lunettes de protection'
+        ],
+        'Prix': [89.90, 125.50, 15.20, 45.00, 12.50],
+        'Description': [
+            'Chaussures',
+            'Veste Blouson', 
+            'Gants',
+            'Casque',
+            'Lunette'
+        ],
+        'Référence': [
+            'JALAS-42',
+            'VEST-L-001',
+            'GANT-9-001',
+            'CASQ-001',
+            'LUN-001'
+        ]
+    }
+    
+    return pd.DataFrame(sample_data)
 
 articles_df = load_articles()
 
@@ -617,26 +684,6 @@ def show_register():
         st.session_state.page = "login"
         st.rerun()
 
-def get_category_emoji(category):
-    """Retourne l'emoji correspondant à chaque catégorie"""
-    emoji_map = {
-        'Chaussures': '👟',
-        'Veste Blouson': '🧥', 
-        'Sous Veste': '👕',
-        'Veste Oxycoupeur': '🔥',
-        'Sécurité': '🦺',
-        'Gants': '🧤',
-        'Pantalon': '👖',
-        'Casque': '⛑️',
-        'Protection': '🛡️',
-        'Lunette': '🥽',
-        'Oxycoupage': '🔧',
-        'Outil': '🔨',
-        'Lampe': '💡',
-        'Marquage': '✏️'
-    }
-    return emoji_map.get(category, '📦')  # 📦 par défaut
-
 def show_catalogue():
     """Affiche le catalogue des articles"""
     st.markdown("### 🛡️ Catalogue FLUX/PARA")
@@ -654,8 +701,8 @@ def show_catalogue():
     
     categories = articles_df['Description'].unique()
     
-    if not hasattr(st.session_state, 'selected_category') or st.session_state.selected_category is None:
-        st.markdown("#### 🗂️ Sélectionner une catégorie")
+    if not st.session_state.get('selected_category'):
+        st.markdown("### 📋 Sélectionnez une catégorie")
         
         cols = st.columns(3)
         for i, category in enumerate(categories):
@@ -1771,16 +1818,16 @@ def render_navigation():
     """Navigation principale avec différenciation selon le rôle et permissions"""
     user_info = st.session_state.get('current_user', {})
     user_role = user_info.get('role', 'user')
-
+    
     if user_role == 'admin':
         # Navigation complète pour admin
-        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
         
         with col1:
             if st.button("🛡️ Catalogue", use_container_width=True):
                 st.session_state.page = "catalogue"
                 st.rerun()
-                
+        
         with col2:
             if st.button("🛒 Panier", use_container_width=True):
                 st.session_state.page = "cart"
@@ -1790,12 +1837,12 @@ def render_navigation():
             if st.button("📊 Historique", use_container_width=True):
                 st.session_state.page = "historique"
                 st.rerun()
-                
+        
         with col4:
             if st.button("📈 Statistiques", use_container_width=True):
                 st.session_state.page = "stats"
                 st.rerun()
-                
+        
         with col5:
             if st.button("🛠️ Articles", use_container_width=True):
                 st.session_state.page = "admin_articles"
@@ -1807,11 +1854,6 @@ def render_navigation():
                 st.rerun()
         
         with col7:
-            if st.button("🛠️ Commandes", use_container_width=True):
-                st.session_state.page = "admin_commandes"
-                st.rerun()
-        
-        with col8:
             if st.button("🚪 Déconnexion", use_container_width=True):
                 st.session_state.authenticated = False
                 st.session_state.current_user = {}
@@ -1917,17 +1959,15 @@ def main():
         elif page == "validation":
             show_validation()
         elif page == "historique":
-            show_historique()
+            show_historique()  # Admin seulement
         elif page == "stats":
-            show_stats()
+            show_stats()  # Admin seulement
         elif page == "mes_commandes":
-            show_mes_commandes()
+            show_mes_commandes()  # Contremaîtres
         elif page == "admin_articles":
-            show_admin_articles()
+            show_admin_articles()  # Admin seulement
         elif page == "admin_users":
-            show_admin_users()
-        elif page == "admin_commandes":
-            show_admin_commandes()  # Nouvelle page
+            show_admin_users()  # Admin seulement
         else:
             show_catalogue()
 
@@ -2446,390 +2486,25 @@ def create_user(username, password, equipe=None, fonction=None):
         st.error(f"Erreur création utilisateur: {e}")
         return False
 
-def show_admin_commandes():
-    """Interface d'administration des commandes"""
-    st.markdown("### 🛠️ Administration des Commandes")
-    
-    # Vérifier les permissions
-    if not st.session_state.get('current_user', {}).get('role') == 'admin':
-        st.error("❌ Accès refusé - Administrateur requis")
-        return
-    
-    # Charger toutes les commandes
-    commandes = load_all_orders()
-    
-    if commandes.empty:
-        st.info("📋 Aucune commande trouvée")
-        return
-    
-    # Afficher les modals en premier si nécessaire
-    if hasattr(st.session_state, 'delete_commande_id'):
-        show_delete_confirmation_modal()
-        return  # Arrêter l'affichage du reste
-    
-    if hasattr(st.session_state, 'edit_commande_id'):
-        show_edit_commande_modal()
-        return  # Arrêter l'affichage du reste
-    
-    # Filtres
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # Filtre par équipe
-        equipes = ['Toutes'] + list(commandes['equipe'].unique())
-        equipe_filter = st.selectbox("🏢 Filtrer par équipe", equipes)
-    
-    with col2:
-        # Filtre par date
-        date_filter = st.date_input("📅 Filtrer par date", value=None)
-    
-    with col3:
-        # Recherche par contremaître
-        search_term = st.text_input("🔍 Rechercher contremaître")
-    
-    # Appliquer les filtres
-    filtered_commandes = commandes.copy()
-    
-    if equipe_filter != 'Toutes':
-        filtered_commandes = filtered_commandes[filtered_commandes['equipe'] == equipe_filter]
-    
-    if search_term:
-        filtered_commandes = filtered_commandes[
-            filtered_commandes['contremaître'].str.contains(search_term, case=False, na=False)
-        ]
-    
-    if date_filter:
-        # Convertir la date de filtre en string pour comparaison
-        date_str = date_filter.strftime('%Y-%m-%d')
-        filtered_commandes = filtered_commandes[
-            filtered_commandes['date'].str.contains(date_str, na=False)
-        ]
-    
-    # Affichage des commandes avec actions
-    st.markdown("#### 📋 Liste des Commandes")
-    st.markdown(f"**{len(filtered_commandes)} commande(s) trouvée(s)**")
-    
-    for idx, commande in filtered_commandes.iterrows():
-        with st.expander(f"🛒 Commande #{commande['id']} - {commande['contremaître']} ({commande['date']})"):
-            
-            # Informations de la commande
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown(f"**👤 Contremaître:** {commande['contremaître']}")
-                st.markdown(f"**🏢 Équipe:** {commande['equipe']}")
-            
-            with col2:
-                st.markdown(f"**📅 Date:** {commande['date']}")
-                st.markdown(f"**💰 Total:** {commande['total_prix']:.2f}€")
-            
-            with col3:
-                st.markdown(f"**📦 Articles:** {commande['nb_articles']}")
-            
-            # Articles de la commande
-            try:
-                articles = json.loads(commande['articles_json'])
-                st.markdown("**📋 Détail des articles:**")
-                
-                # Tableau des articles
-                articles_df = pd.DataFrame(articles)
-                if not articles_df.empty:
-                    # Sélectionner les colonnes disponibles
-                    display_columns = []
-                    if 'Nom' in articles_df.columns:
-                        display_columns.append('Nom')
-                    if 'Prix' in articles_df.columns:
-                        display_columns.append('Prix')
-                    if 'Quantité' in articles_df.columns:
-                        display_columns.append('Quantité')
-                    
-                    if display_columns:
-                        st.dataframe(
-                            articles_df[display_columns],
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                    else:
-                        st.dataframe(articles_df, use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.error(f"❌ Erreur lors du chargement des articles: {e}")
-            
-            # Actions d'administration
-            st.markdown("---")
-            st.markdown("**🛠️ Actions d'administration:**")
-            
-            col_actions = st.columns(3)
-            
-            with col_actions[0]:
-                if st.button(f"✏️ Modifier", key=f"edit_{commande['id']}", use_container_width=True):
-                    st.session_state.edit_commande_id = commande['id']
-                    st.rerun()
-            
-            with col_actions[1]:
-                if st.button(f"📧 Renvoyer Email", key=f"resend_{commande['id']}", use_container_width=True):
-                    with st.spinner("Envoi en cours..."):
-                        if resend_order_email(commande):
-                            st.success("✅ Email renvoyé avec succès")
-                        else:
-                            st.error("❌ Erreur lors de l'envoi")
-            
-            with col_actions[2]:
-                if st.button(f"🗑️ Supprimer", key=f"delete_{commande['id']}", type="secondary", use_container_width=True):
-                    st.session_state.delete_commande_id = commande['id']
-                    st.rerun()
-
-
-def show_delete_confirmation_modal():
-    """Modal de confirmation de suppression"""
-    commande_id = st.session_state.delete_commande_id
-    
-    st.markdown("---")
-    st.error("⚠️ **ATTENTION - Suppression de commande**")
-    
-    # Créer un conteneur centré pour le modal
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.markdown(f"### 🗑️ Supprimer la commande #{commande_id}")
-        st.markdown("**Êtes-vous sûr de vouloir supprimer cette commande ?**")
-        st.warning("⚠️ Cette action est **IRRÉVERSIBLE** !")
-        
-        # Boutons de confirmation
-        col_confirm1, col_confirm2 = st.columns(2)
-        
-        with col_confirm1:
-            if st.button("✅ OUI, SUPPRIMER", type="primary", use_container_width=True, key="confirm_delete"):
-                if delete_commande(commande_id):
-                    st.success(f"✅ Commande #{commande_id} supprimée avec succès")
-                    del st.session_state.delete_commande_id
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error("❌ Erreur lors de la suppression")
-        
-        with col_confirm2:
-            if st.button("❌ ANNULER", use_container_width=True, key="cancel_delete"):
-                del st.session_state.delete_commande_id
-                st.rerun()
-
-
-def show_edit_commande_modal():
-    """Modal d'édition de commande"""
-    commande_id = st.session_state.edit_commande_id
-    
-    st.markdown("---")
-    st.info(f"✏️ **Modification de la commande #{commande_id}**")
-    
-    # Charger les détails de la commande
-    commande = get_commande_by_id(commande_id)
-    
-    if commande is None:
-        st.error("❌ Commande introuvable")
-        del st.session_state.edit_commande_id
-        return
-    
-    # Formulaire d'édition
-    with st.form(f"edit_form_{commande_id}", clear_on_submit=False):
-        st.markdown("### 📝 Modifier les informations")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            new_contremaître = st.text_input("👤 Contremaître", value=commande['contremaître'])
-            new_equipe = st.text_input("🏢 Équipe", value=commande['equipe'])
-        
-        with col2:
-            # Convertir la date string en objet date
-            try:
-                if isinstance(commande['date'], str):
-                    date_obj = pd.to_datetime(commande['date']).date()
-                else:
-                    date_obj = commande['date']
-            except:
-                date_obj = datetime.now().date()
-            
-            new_date = st.date_input("📅 Date", value=date_obj)
-        
-        # Articles - Affichage et modification simplifiée
-        st.markdown("### 📋 Articles")
-        
-        try:
-            articles = json.loads(commande['articles_json'])
-            
-            # Afficher les articles actuels
-            st.markdown("**Articles actuels :**")
-            articles_df = pd.DataFrame(articles)
-            if not articles_df.empty:
-                st.dataframe(articles_df, use_container_width=True, hide_index=True)
-            
-            # Zone de modification JSON (pour utilisateurs avancés)
-            with st.expander("🔧 Modification avancée (JSON)"):
-                articles_json = st.text_area(
-                    "Articles JSON", 
-                    value=commande['articles_json'],
-                    height=200,
-                    help="Format JSON des articles - Modification pour utilisateurs avancés uniquement"
-                )
-        except:
-            st.error("❌ Erreur lors du chargement des articles")
-            articles_json = commande['articles_json']
-        
-        # Boutons de soumission
-        col_submit1, col_submit2 = st.columns(2)
-        
-        with col_submit1:
-            submitted = st.form_submit_button("✅ SAUVEGARDER", type="primary", use_container_width=True)
-            if submitted:
-                if update_commande(commande_id, new_contremaître, new_equipe, new_date, articles_json):
-                    st.success("✅ Commande mise à jour avec succès")
-                    del st.session_state.edit_commande_id
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error("❌ Erreur lors de la mise à jour")
-        
-        with col_submit2:
-            cancelled = st.form_submit_button("❌ ANNULER", use_container_width=True)
-            if cancelled:
-                del st.session_state.edit_commande_id
-                st.rerun()
-
-
-def delete_commande(commande_id):
-    """Supprime une commande de la base de données"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM commandes WHERE id = ?", (commande_id,))
-        conn.commit()
-        conn.close()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur suppression: {e}")
-        return False
-
-
-def get_commande_by_id(commande_id):
-    """Récupère une commande par son ID"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM commandes WHERE id = ?", (commande_id,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            columns = ['id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles']
-            return dict(zip(columns, result))
-        
-        return None
-        
-    except Exception as e:
-        st.error(f"Erreur récupération commande: {e}")
-        return None
-
-
-def update_commande(commande_id, contremaître, equipe, date, articles_json):
-    """Met à jour une commande"""
-    try:
-        # Valider le JSON
-        articles = json.loads(articles_json)
-        total_prix = sum(float(article.get('Prix', 0)) * int(article.get('Quantité', 0)) for article in articles)
-        nb_articles = sum(int(article.get('Quantité', 0)) for article in articles)
-        
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE commandes 
-            SET contremaître = ?, equipe = ?, date = ?, articles_json = ?, total_prix = ?, nb_articles = ?
-            WHERE id = ?
-        """, (contremaître, equipe, str(date), articles_json, total_prix, nb_articles, commande_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return True
-        
-    except json.JSONDecodeError:
-        st.error("❌ Format JSON invalide")
-        return False
-    except Exception as e:
-        st.error(f"Erreur mise à jour: {e}")
-        return False
-
-
-def resend_order_email(commande):
-    """Renvoie l'email de commande"""
-    try:
-        articles = json.loads(commande['articles_json'])
-        
-        # Utiliser la fonction d'envoi existante
-        return send_order_email(
-            commande['contremaître'],
-            commande['equipe'], 
-            articles,
-            commande['total_prix']
-        )
-        
-    except Exception as e:
-        st.error(f"Erreur renvoi email: {e}")
-        return False
-
-
-def regenerate_order_pdf(commande):
-    """Régénère le PDF de commande"""
-    try:
-        articles = json.loads(commande['articles_json'])
-        
-        # Utiliser la fonction de génération PDF existante
-        pdf_buffer = generate_order_pdf(
-            commande['contremaître'],
-            commande['equipe'],
-            articles,
-            commande['total_prix']
-        )
-        
-        return pdf_buffer is not None
-        
-    except Exception as e:
-        st.error(f"Erreur génération PDF: {e}")
-        return False
-
-def load_all_orders():
-    """Charge toutes les commandes depuis la base de données"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        # Charger toutes les commandes
-        df = pd.read_sql_query("""
-            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
-            FROM commandes 
-            ORDER BY date DESC
-        """, conn)
-        
-        conn.close()
-        return df
-        
-    except Exception as e:
-        st.error(f"Erreur chargement commandes: {e}")
-        return pd.DataFrame()
+def get_category_emoji(category):
+    """Retourne l'emoji correspondant à chaque catégorie"""
+    emoji_map = {
+        'Chaussures': '👟',
+        'Veste Blouson': '🧥', 
+        'Sous Veste': '👕',
+        'Veste Oxycoupeur': '🔥',
+        'Sécurité': '🦺',
+        'Gants': '🧤',
+        'Pantalon': '👖',
+        'Casque': '⛑️',
+        'Protection': '🛡️',
+        'Lunette': '🥽',
+        'Oxycoupage': '🔧',
+        'Outil': '🔨',
+        'Lampe': '💡',
+        'Marquage': '✏️'
+    }
+    return emoji_map.get(category, '📦')
 
 if __name__ == "__main__":
     main()
