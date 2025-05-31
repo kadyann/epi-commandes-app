@@ -2564,5 +2564,67 @@ def get_category_emoji(category):
     }
     return emoji_map.get(category, '📦')
 
+def get_user_orders(user_id):
+    """Récupère les commandes d'un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total, status, articles 
+                FROM orders 
+                WHERE user_id = %s 
+                ORDER BY date DESC
+            """, (user_id,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total, status, articles 
+                FROM orders 
+                WHERE user_id = ? 
+                ORDER BY date DESC
+            """, (user_id,))
+        
+        orders = cursor.fetchall()
+        conn.close()
+        return orders
+        
+    except Exception as e:
+        st.error(f"Erreur chargement commandes: {e}")
+        return []
+
+def show_my_orders():
+    """Affiche les commandes de l'utilisateur connecté"""
+    st.markdown("### 📊 Mes commandes")
+    
+    if not st.session_state.get('current_user'):
+        st.error("❌ Utilisateur non connecté")
+        return
+    
+    user_id = st.session_state.current_user['id']
+    orders = get_user_orders(user_id)
+    
+    if not orders:
+        st.info("📦 Aucune commande trouvée")
+        return
+    
+    for order in orders:
+        order_id, date, total, status, articles_json = order
+        
+        with st.expander(f"🛍️ Commande #{order_id} - {date} - {total:.2f}€"):
+            st.write(f"**Statut:** {status}")
+            
+            try:
+                articles = json.loads(articles_json) if articles_json else []
+                if articles:
+                    st.write("**Articles commandés:**")
+                    for article in articles:
+                        st.write(f"- {article.get('Nom', 'N/A')} - {article.get('Prix', 0):.2f}€")
+                else:
+                    st.write("Aucun article dans cette commande")
+            except json.JSONDecodeError:
+                st.write("Erreur de lecture des articles")
+
 if __name__ == "__main__":
     main()
