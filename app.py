@@ -234,13 +234,13 @@ st.markdown("""
 
 # === FONCTIONS BASE DE DONNÉES ===
 def init_database():
-    """Initialise la base de données avec toutes les tables nécessaires"""
+    """Initialise la base de données"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             
-            # Table des utilisateurs avec couleur préférée
+            # Table users
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -248,13 +248,12 @@ def init_database():
                     password VARCHAR(255) NOT NULL,
                     role VARCHAR(20) DEFAULT 'user',
                     equipe VARCHAR(50),
-                    fonction VARCHAR(50),
-                    couleur_preferee VARCHAR(30),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    fonction VARCHAR(100),
+                    couleur_preferee VARCHAR(30)
                 )
             """)
             
-            # Table des commandes
+            # Table commandes
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS commandes (
                     id SERIAL PRIMARY KEY,
@@ -263,7 +262,8 @@ def init_database():
                     equipe VARCHAR(50),
                     articles_json TEXT,
                     total_prix DECIMAL(10,2),
-                    nb_articles INTEGER
+                    nb_articles INTEGER,
+                    user_id INTEGER
                 )
             """)
             
@@ -271,7 +271,7 @@ def init_database():
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             
-            # Table des utilisateurs avec couleur préférée
+            # Table users
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,21 +280,21 @@ def init_database():
                     role TEXT DEFAULT 'user',
                     equipe TEXT,
                     fonction TEXT,
-                    couleur_preferee TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    couleur_preferee TEXT
                 )
             """)
             
-            # Table des commandes
+            # Table commandes
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS commandes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    date DATETIME DEFAULT CURRENT_TIMESTAMP,
                     contremaître TEXT,
                     equipe TEXT,
                     articles_json TEXT,
                     total_prix REAL,
-                    nb_articles INTEGER
+                    nb_articles INTEGER,
+                    user_id INTEGER
                 )
             """)
         
@@ -302,7 +302,7 @@ def init_database():
         conn.close()
         
     except Exception as e:
-        st.error(f"Erreur initialisation base de données: {e}")
+        st.error(f"Erreur initialisation base: {e}")
 
 def save_commande_to_db(commande_data):
     """Sauvegarde une commande en base de données"""
@@ -320,17 +320,17 @@ def save_commande_to_db(commande_data):
         
         if USE_POSTGRESQL:
             cursor.execute('''
-                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
             ''', (date_now, commande_data['utilisateur'], commande_data['equipe'], 
-                  articles_json, commande_data['total'], nb_articles))
+                  articles_json, commande_data['total'], nb_articles, commande_data['user_id']))
             commande_id = cursor.fetchone()[0]
         else:
             cursor.execute('''
-                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO commandes (date, contremaître, equipe, articles_json, total_prix, nb_articles, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (date_now, commande_data['utilisateur'], commande_data['equipe'], 
-                  articles_json, commande_data['total'], nb_articles))
+                  articles_json, commande_data['total'], nb_articles, commande_data['user_id']))
             commande_id = cursor.lastrowid
         
         conn.commit()
@@ -414,49 +414,86 @@ def migrate_add_couleur_column():
         # Ignorer les erreurs si la colonne existe déjà
         pass
 
-# === GESTION UTILISATEURS ===
-def init_users_db():
-    """Initialise les utilisateurs par défaut"""
+def migrate_add_user_id_column():
+    """Ajoute la colonne user_id si elle n'existe pas"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
-            
-            # Vérifier si l'admin existe
-            cursor.execute("SELECT id FROM users WHERE username = %s", ('admin',))
-            if not cursor.fetchone():
-                admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
-                cursor.execute("""
-                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, ('admin', admin_password, 'admin', 'DIRECTION', 'Administrateur', 'DT770'))
-            else:
-                # Mettre à jour l'admin existant avec la couleur DT770
-                cursor.execute("UPDATE users SET couleur_preferee = %s WHERE username = %s", ('DT770', 'admin'))
+            cursor.execute("""
+                ALTER TABLE commandes 
+                ADD COLUMN IF NOT EXISTS user_id INTEGER
+            """)
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
+            # Vérifier si la colonne existe
+            cursor.execute("PRAGMA table_info(commandes)")
+            columns = [column[1] for column in cursor.fetchall()]
             
-            # Vérifier si l'admin existe
-            cursor.execute("SELECT id FROM users WHERE username = ?", ('admin',))
-            if not cursor.fetchone():
-                admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
-                cursor.execute("""
-                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, ('admin', admin_password, 'admin', 'DIRECTION', 'Administrateur', 'DT770'))
-            else:
-                # Mettre à jour l'admin existant avec la couleur DT770
-                cursor.execute("UPDATE users SET couleur_preferee = ? WHERE username = ?", ('DT770', 'admin'))
+            if 'user_id' not in columns:
+                cursor.execute("ALTER TABLE commandes ADD COLUMN user_id INTEGER")
         
         conn.commit()
         conn.close()
         
     except Exception as e:
-        st.error(f"Erreur initialisation utilisateurs: {e}")
+        # Ignorer les erreurs si la colonne existe déjà
+        pass
+
+# === GESTION UTILISATEURS ===
+def init_users_db():
+    """Initialise les utilisateurs par défaut"""
+    # Migration pour ajouter la couleur préférée
+    migrate_add_couleur_column()
+    
+    # Créer l'utilisateur admin par défaut
+    admin_password = hashlib.sha256("admin123".encode()).hexdigest()
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            # Vérifier si admin existe
+            cursor.execute("SELECT id FROM users WHERE username = %s", ("admin",))
+            if cursor.fetchone():
+                # Mettre à jour admin existant
+                cursor.execute("""
+                    UPDATE users SET couleur_preferee = %s WHERE username = %s
+                """, ("DT770", "admin"))
+            else:
+                # Créer nouvel admin
+                cursor.execute("""
+                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            # Vérifier si admin existe
+            cursor.execute("SELECT id FROM users WHERE username = ?", ("admin",))
+            if cursor.fetchone():
+                # Mettre à jour admin existant
+                cursor.execute("""
+                    UPDATE users SET couleur_preferee = ? WHERE username = ?
+                """, ("DT770", "admin"))
+            else:
+                # Créer nouvel admin
+                cursor.execute("""
+                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur initialisation admin: {e}")
 
 def authenticate_user(username, password):
-    """Authentifie un utilisateur et retourne ses informations"""
+    """Authentifie un utilisateur"""
     try:
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         
@@ -464,34 +501,31 @@ def authenticate_user(username, password):
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, username, role, equipe, fonction 
-                FROM users 
-                WHERE username = %s AND password = %s
+                SELECT id, username, role, equipe, fonction, couleur_preferee 
+                FROM users WHERE username = %s AND password = %s
             """, (username, password_hash))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, username, role, equipe, fonction 
-                FROM users 
-                WHERE username = ? AND password = ?
+                SELECT id, username, role, equipe, fonction, couleur_preferee 
+                FROM users WHERE username = ? AND password = ?
             """, (username, password_hash))
         
         user = cursor.fetchone()
         conn.close()
         
         if user:
-            user_id, username, role, equipe, fonction = user
             return {
-                'id': user_id,
-                'username': username,
-                'role': role,
-                'equipe': equipe,
-                'fonction': fonction
+                'id': user[0],
+                'username': user[1],
+                'role': user[2],
+                'equipe': user[3],
+                'fonction': user[4],
+                'couleur_preferee': user[5]
             }
-        else:
-            return None
-            
+        return None
+        
     except Exception as e:
         st.error(f"Erreur authentification: {e}")
         return None
@@ -538,42 +572,65 @@ def calculate_cart_total():
     return sum(float(item['Prix']) for item in st.session_state.cart)
 
 def add_to_cart(article, quantity=1):
-    """Ajoute un article au panier avec vérification budget"""
-    prix_ajout = float(article['Prix']) * quantity
-    nouveau_total = calculate_cart_total() + prix_ajout
+    """Ajoute un article au panier avec vérification du budget"""
+    if 'cart' not in st.session_state:
+        st.session_state.cart = []
     
+    # Calculer le nouveau total si on ajoute l'article
+    current_total = calculate_cart_total()
+    article_price = float(article['Prix']) * quantity
+    nouveau_total = current_total + article_price
+    
+    # Vérifier le budget
     if nouveau_total > MAX_CART_AMOUNT:
-        budget_depasse = nouveau_total - MAX_CART_AMOUNT
+        depassement = nouveau_total - MAX_CART_AMOUNT
         
+        # Messages d'erreur marrants pour dépassement budget
         messages_budget = [
-            "Holà ! Tu veux ruiner le secteur FLUX/PARA ? 😅",
-            "Attention, comptable en panique ! 🤯",
-            "Le budget fait une crise cardiaque ! 💔",
-            "Budget FLUX/PARA K.O. ! 🥊",
-            "Erreur 404 : Budget not found ! 🔍"
+            "🚨 Holà ! Votre portefeuille crie au secours !",
+            "💸 Budget explosé ! Votre banquier va pleurer !",
+            "🔥 Attention ! Vous brûlez votre budget !",
+            "⚠️ Stop ! Vous dépassez la limite autorisée !",
+            "💰 Budget dépassé ! Retirez quelques articles !",
+            "🚫 Impossible ! Vous voulez ruiner l'entreprise ?",
+            "📊 Erreur 1500€ ! Budget maximum atteint !",
+            "🛑 Frein d'urgence ! Budget dépassé !"
         ]
         
-        message_rigolo = random.choice(messages_budget)
-        
+        # Stocker l'erreur avec timestamp pour animation
         st.session_state.budget_error = {
-            'message': message_rigolo,
-            'nouveau_total': nouveau_total,
+            'message': random.choice(messages_budget),
+            'details': f"Impossible d'ajouter {article['Nom']}",
             'budget_max': MAX_CART_AMOUNT,
-            'depassement': budget_depasse,
-            'details': f"Vous tentez d'ajouter {prix_ajout:.2f}€, mais cela dépasserait le budget de {budget_depasse:.2f}€",
+            'nouveau_total': nouveau_total,
+            'depassement': depassement,
             'timestamp': time.time()
         }
         
+        # Afficher l'erreur immédiatement
+        st.error(f"🚨 {st.session_state.budget_error['message']}")
+        st.error(f"💰 Budget maximum: {MAX_CART_AMOUNT:.2f}€")
+        st.error(f"📊 Total actuel: {current_total:.2f}€")
+        st.error(f"➕ Article à ajouter: {article_price:.2f}€")
+        st.error(f"🔥 Nouveau total: {nouveau_total:.2f}€")
+        st.error(f"⚠️ Dépassement: {depassement:.2f}€")
+        
         return False
     
+    # Ajouter l'article si le budget le permet
     for _ in range(quantity):
-        st.session_state.cart.append(convert_pandas_to_dict(article))
+        st.session_state.cart.append(article)
     
-    if quantity == 1:
-        st.toast(f"✅ {article['Nom']} ajouté au panier !", icon="🛒")
-    else:
-        st.toast(f"✅ {quantity}x {article['Nom']} ajoutés au panier !", icon="🛒")
+    # Messages de succès marrants
+    messages_succes = [
+        f"✅ {article['Nom']} ajouté ! Votre équipe sera ravie !",
+        f"🎯 Excellent choix ! {article['Nom']} dans le panier !",
+        f"⭐ {article['Nom']} ajouté avec style !",
+        f"🚀 Mission accomplie ! {article['Nom']} embarqué !",
+        f"🛡️ {article['Nom']} rejoint votre arsenal !"
+    ]
     
+    st.success(random.choice(messages_succes))
     return True
 
 def grouper_articles_panier(cart):
@@ -704,84 +761,130 @@ def show_cart_sidebar():
         st.button("❌ Budget dépassé", disabled=True, use_container_width=True)
 
 def show_login():
-    """Page de connexion"""
-    st.markdown("### 🔐 Connexion FLUX/PARA")
+    """Page de connexion avec messages marrants"""
+    st.markdown("### 🛡️ Connexion FLUX/PARA")
+    
+    # Messages marrants aléatoires
+    messages_marrants = [
+        "🎯 Prêt à équiper votre équipe comme un chef ?",
+        "⚡ Connectez-vous pour accéder au meilleur matériel !",
+        "🚀 Votre mission : équiper, protéger, réussir !",
+        "🛡️ Sécurité d'abord, style ensuite !",
+        "💪 Ensemble, on équipe mieux !",
+        "🎪 Bienvenue dans le cirque... euh, l'entrepôt !",
+        "🦸‍♂️ Transformez-vous en super-contremaître !",
+        "🎲 Tentez votre chance... de bien vous équiper !"
+    ]
+    
+    message_du_jour = random.choice(messages_marrants)
+    st.info(message_du_jour)
     
     with st.form("login_form"):
         username = st.text_input("👤 Nom d'utilisateur")
-        password = st.text_input("🔒 Mot de passe", type="password")
+        password = st.text_input("🔑 Mot de passe", type="password")
         
         col1, col2 = st.columns(2)
         with col1:
-            login_button = st.form_submit_button("🚀 Se connecter", use_container_width=True)
+            login_button = st.form_submit_button("🔐 Se connecter", use_container_width=True)
         with col2:
             register_button = st.form_submit_button("📝 S'inscrire", use_container_width=True)
         
         if login_button:
-            if not username or not password:
-                st.error("❌ Veuillez remplir tous les champs")
-            else:
-                user_info = authenticate_user(username, password)
-                if user_info:
+            if username and password:
+                user = authenticate_user(username, password)
+                if user:
+                    st.session_state.current_user = user
                     st.session_state.authenticated = True
-                    st.session_state.current_user = user_info
-                    st.session_state.page = "catalogue"
-                    st.success(f"✅ Connexion réussie ! Bienvenue {user_info['username']}")
+                    st.session_state.page = 'catalogue'
+                    
+                    # Messages de bienvenue marrants
+                    messages_bienvenue = [
+                        f"🎉 Salut {user['username']} ! Prêt à faire du shopping sécurisé ?",
+                        f"🚀 {user['username']} dans la place ! L'aventure commence !",
+                        f"⭐ Bienvenue {user['username']} ! Votre équipe vous attend !",
+                        f"🎯 {user['username']} connecté ! Mission équipement en cours !",
+                        f"🛡️ {user['username']} ! Votre arsenal vous attend !"
+                    ]
+                    
+                    st.success(random.choice(messages_bienvenue))
                     time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("❌ Identifiants incorrects")
+                    # Messages d'erreur marrants
+                    messages_erreur = [
+                        "🤔 Hmm... Ces identifiants ne me disent rien !",
+                        "🕵️‍♂️ Identifiants introuvables ! Êtes-vous un espion ?",
+                        "🚫 Accès refusé ! Mot de passe incorrect, agent !",
+                        "❌ Erreur 404 : Utilisateur non trouvé dans nos fichiers !",
+                        "🔒 Mauvaise combinaison ! Réessayez, agent secret !"
+                    ]
+                    st.error(random.choice(messages_erreur))
+            else:
+                st.error("❌ Veuillez remplir tous les champs")
         
         if register_button:
             st.session_state.page = 'register'
             st.rerun()
     
-    # Lien mot de passe oublié
-    st.markdown("---")
-    if st.button("🔑 Mot de passe oublié ?"):
+    if st.button("🔑 Mot de passe oublié ?", use_container_width=True):
         st.session_state.page = 'reset_password'
         st.rerun()
 
 def show_register():
-    """Page d'inscription"""
-    st.markdown("### 📝 Créer un compte")
+    """Page d'inscription avec messages marrants"""
+    st.markdown("### 📝 Inscription FLUX/PARA")
+    
+    # Message d'accueil marrant
+    messages_inscription = [
+        "🎪 Rejoignez le cirque... euh, l'équipe !",
+        "🚀 Prêt à devenir un super-contremaître ?",
+        "⭐ Bienvenue dans l'élite de l'équipement !",
+        "🎯 Inscription express pour mission équipement !",
+        "🛡️ Rejoignez la garde d'élite FLUX/PARA !"
+    ]
+    
+    st.info(random.choice(messages_inscription))
     
     with st.form("register_form"):
         username = st.text_input("👤 Nom d'utilisateur")
-        password = st.text_input("🔒 Mot de passe", type="password")
-        password_confirm = st.text_input("🔒 Confirmer le mot de passe", type="password")
+        password = st.text_input("🔑 Mot de passe", type="password")
+        confirm_password = st.text_input("🔑 Confirmer le mot de passe", type="password")
         
         # Sélection d'équipe
         equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"]
         equipe = st.selectbox("👷‍♂️ Équipe", equipes)
         
-        # Fonction
-        fonctions = ["Contremaître", "RTZ", "Technicien", "Responsable", "Autre"]
-        fonction = st.selectbox("🔧 Fonction", fonctions)
+        fonction = st.text_input("💼 Fonction")
+        couleur_preferee = st.text_input("🎨 Couleur préférée (pour récupération mot de passe)", 
+                                       placeholder="Ex: bleu, rouge, vert...")
         
-        # Question de sécurité
-        couleur_preferee = st.text_input("🎨 Votre couleur préférée", placeholder="Pour la récupération de mot de passe")
-        
-        submitted = st.form_submit_button("✅ Créer le compte", use_container_width=True)
+        submitted = st.form_submit_button("📝 S'inscrire", use_container_width=True)
         
         if submitted:
-            if not all([username, password, password_confirm, couleur_preferee]):
+            if not all([username, password, confirm_password, fonction, couleur_preferee]):
                 st.error("❌ Veuillez remplir tous les champs")
-            elif password != password_confirm:
+            elif password != confirm_password:
                 st.error("❌ Les mots de passe ne correspondent pas")
             elif len(password) < 6:
                 st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
             else:
                 success, message = create_user(username, password, equipe, fonction, couleur_preferee)
                 if success:
-                    st.success(f"✅ {message}")
+                    # Messages de succès marrants
+                    messages_succes = [
+                        "🎉 Inscription réussie ! Bienvenue dans l'équipe !",
+                        "⭐ Félicitations ! Vous êtes maintenant un agent FLUX/PARA !",
+                        "🚀 Mission accomplie ! Vous pouvez maintenant vous connecter !",
+                        "🛡️ Bienvenue dans l'élite ! Connexion autorisée !",
+                        "🎯 Inscription validée ! Prêt pour l'action !"
+                    ]
+                    st.success(random.choice(messages_succes))
                     time.sleep(2)
                     st.session_state.page = 'login'
                     st.rerun()
                 else:
                     st.error(f"❌ {message}")
     
-    st.markdown("---")
     if st.button("← Retour à la connexion"):
         st.session_state.page = 'login'
         st.rerun()
@@ -1459,7 +1562,8 @@ def show_validation():
                 'commentaire': commentaire_commande,
                 'date_livraison': str(date_livraison),
                 'articles': st.session_state.cart.copy(),
-                'total': total
+                'total': total,
+                'user_id': st.session_state.current_user['id']
             }
             
             # Afficher le spinner pendant le traitement
@@ -1532,95 +1636,174 @@ def show_validation():
             st.rerun()
 
 def show_mes_commandes():
-    """Page des commandes personnelles pour les contremaîtres"""
+    """Affiche les commandes de l'utilisateur connecté"""
     st.markdown("### 📊 Mes commandes")
     
-    user_info = st.session_state.get('current_user', {})
-    username = user_info.get('username', '')
-    
-    if not username:
-        st.error("❌ Erreur: utilisateur non connecté")
+    user_info = st.session_state.get('current_user')
+    if not user_info:
+        st.error("❌ Vous devez être connecté")
         return
     
+    # Migrer la table pour ajouter user_id
+    migrate_add_user_id_column()
+    
+    orders = []
+    
     try:
+        # Essayer avec contremaître (système actuel)
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
+                WHERE contremaître = %s 
+                ORDER BY date DESC
+            """, (user_info['username'],))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
+                WHERE contremaître = ? 
+                ORDER BY date DESC
+            """, (user_info['username'],))
         
-        cursor = conn.cursor()
-        
-        # Récupérer SEULEMENT les commandes de ce contremaître
-        cursor.execute("""
-            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
-            FROM commandes 
-            WHERE contremaître = ?
-            ORDER BY date DESC
-        """, (username,))
-        
-        commandes = cursor.fetchall()
+        orders = cursor.fetchall()
         conn.close()
-        
-        if not commandes:
-            st.info("📭 Vous n'avez encore passé aucune commande")
-            if st.button("🛡️ Aller au catalogue"):
-                st.session_state.page = "catalogue"
-                st.rerun()
-            return
-        
-        # Statistiques personnelles
-        df_commandes = pd.DataFrame(commandes, columns=[
-            'id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles'
-        ])
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            total_commandes = len(df_commandes)
-            st.metric("🛡️ Mes commandes", total_commandes)
-        
-        with col2:
-            total_montant = df_commandes['total_prix'].sum()
-            st.metric("💰 Total dépensé", f"{total_montant:.2f}€")
-        
-        with col3:
-            moyenne_commande = df_commandes['total_prix'].mean()
-            st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
-        
-        st.markdown("---")
-        
-        # Afficher les commandes
-        for commande in commandes:
-            commande_id, date, contremaitre, equipe, articles_json, total_prix, nb_articles = commande
-            
-            with st.expander(f"🛡️ Commande #{commande_id} - {date} - {total_prix:.2f}€"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown(f"**📅 Date:** {date}")
-                    st.markdown(f"**👷‍♂️ Équipe:** {equipe}")
-                
-                with col2:
-                    st.markdown(f"**💰 Total:** {total_prix:.2f}€")
-                    st.markdown(f"**📦 Nb articles:** {nb_articles}")
-                
-                # Afficher les articles
-                try:
-                    articles = json.loads(articles_json)
-                    grouped_articles = grouper_articles_panier(articles)
-                    
-                    st.markdown("**Articles commandés:**")
-                    for group in grouped_articles:
-                        article = group['article']
-                        quantite = group['quantite']
-                        prix_total = float(article['Prix']) * quantite
-                        st.markdown(f"• {article['Nom']} - Quantité: {quantite} - {prix_total:.2f}€")
-                        
-                except Exception as e:
-                    st.error(f"Erreur affichage articles: {e}")
         
     except Exception as e:
         st.error(f"Erreur chargement commandes: {e}")
+        orders = []
+    
+    if not orders:
+        st.info("📭 Aucune commande trouvée")
+        
+        # Messages marrants pour encourager à commander
+        messages_encouragement = [
+            "🛍️ Votre historique est vide ! Temps de faire du shopping !",
+            "🎯 Aucune commande ? Votre équipe attend son équipement !",
+            "🚀 Première mission : équiper votre équipe !",
+            "⭐ Commencez votre aventure shopping sécurisé !",
+            "🛡️ Votre arsenal est vide ! Temps de l'équiper !"
+        ]
+        
+        st.info(random.choice(messages_encouragement))
+        
+        if st.button("🛍️ Aller au catalogue", use_container_width=True):
+            st.session_state.page = "catalogue"
+            st.rerun()
+        return
+    
+    # Statistiques personnelles avec messages marrants
+    total_commandes = len(orders)
+    total_depense = sum(order[2] for order in orders)  # total_prix est à l'index 2
+    moyenne_commande = total_depense / total_commandes if total_commandes > 0 else 0
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("🛍️ Mes commandes", total_commandes)
+        if total_commandes > 10:
+            st.caption("🏆 Champion du shopping !")
+        elif total_commandes > 5:
+            st.caption("⭐ Bon client !")
+        else:
+            st.caption("🌱 Débutant prometteur !")
+    
+    with col2:
+        st.metric("💰 Total dépensé", f"{total_depense:.2f}€")
+        if total_depense > 5000:
+            st.caption("💎 VIP Platine !")
+        elif total_depense > 2000:
+            st.caption("🥇 Client Gold !")
+        else:
+            st.caption("🥉 En progression !")
+    
+    with col3:
+        st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
+        if moyenne_commande > 1000:
+            st.caption("🎯 Précision chirurgicale !")
+        elif moyenne_commande > 500:
+            st.caption("⚖️ Équilibré !")
+        else:
+            st.caption("🐭 Petites commandes !")
+    
+    st.markdown("---")
+    
+    # Afficher les commandes avec messages marrants
+    for i, order in enumerate(orders):
+        order_id, date, total, status, articles_json = order
+        
+        # Émojis selon le montant
+        if total > 1000:
+            emoji = "💎"
+        elif total > 500:
+            emoji = "🥇"
+        elif total > 200:
+            emoji = "⭐"
+        else:
+            emoji = "🛍️"
+        
+        with st.expander(f"{emoji} Commande #{order_id} - {date} - {total:.2f}€"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**📅 Date:** {date}")
+                st.write(f"**💰 Total:** {total:.2f}€")
+            
+            with col2:
+                st.write(f"**📋 Statut:** {status}")
+                
+                # Messages marrants selon le statut
+                if status == "validée":
+                    st.success("✅ Mission accomplie !")
+                elif status == "en_cours":
+                    st.info("⏳ En préparation...")
+                elif status == "expédiée":
+                    st.info("🚚 En route vers vous !")
+            
+            # Afficher les articles
+            try:
+                articles = json.loads(articles_json) if articles_json else []
+                if articles:
+                    st.write("**🛡️ Articles commandés:**")
+                    
+                    # Grouper les articles identiques
+                    grouped_articles = grouper_articles_panier(articles)
+                    
+                    for group in grouped_articles:
+                        article = group['article']
+                        quantite = group['quantite']
+                        prix_unitaire = float(article['Prix'])
+                        prix_total = prix_unitaire * quantite
+                        
+                        st.write(f"• **{article['Nom']}**")
+                        st.write(f"  └ Quantité: {quantite} × {prix_unitaire:.2f}€ = {prix_total:.2f}€")
+                else:
+                    st.write("❓ Aucun article dans cette commande")
+            except json.JSONDecodeError:
+                st.error("❌ Erreur de lecture des articles")
+            except Exception as e:
+                st.error(f"❌ Erreur affichage articles: {e}")
+    
+    # Bouton pour nouvelle commande avec message marrant
+    st.markdown("---")
+    
+    messages_nouvelle_commande = [
+        "🚀 Prêt pour une nouvelle mission shopping ?",
+        "⭐ Votre équipe a besoin de plus d'équipement ?",
+        "🎯 Temps de compléter votre arsenal !",
+        "🛡️ Une nouvelle aventure vous attend !",
+        "💪 Continuez à équiper comme un chef !"
+    ]
+    
+    st.info(random.choice(messages_nouvelle_commande))
+    
+    if st.button("🛍️ Nouvelle commande", use_container_width=True):
+        st.session_state.page = "catalogue"
+        st.rerun()
 
 def show_stats():
     """Page de statistiques des commandes - Selon permissions"""
@@ -2057,24 +2240,13 @@ def render_navigation():
 
 def main():
     """Fonction principale de l'application"""
-    # Initialiser la base de données
+    # Initialisation
     init_database()
-    
-    # Migration pour ajouter la couleur préférée
-    migrate_add_couleur_column()
-    
-    # Initialiser l'utilisateur admin
     init_users_db()
+    init_session_state()
     
-    # Initialiser les variables de session
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    if 'current_user' not in st.session_state:
-        st.session_state.current_user = None
-    if 'cart' not in st.session_state:
-        st.session_state.cart = []
-    if 'page' not in st.session_state:
-        st.session_state.page = 'login'
+    # Afficher les erreurs de budget avec animation
+    show_budget_error_modal()
     
     # Navigation selon l'état d'authentification
     if not st.session_state.get('authenticated', False):
@@ -2109,6 +2281,54 @@ def main():
             show_admin_users()
         else:
             show_catalogue()
+
+def show_main_app():
+    """Interface principale de l'application"""
+    user_info = st.session_state.get('current_user', {})
+    
+    if not user_info:
+        st.session_state.page = 'login'
+        st.rerun()
+        return
+    
+    # Message de bienvenue marrant
+    messages_app = [
+        f"🎯 Salut {user_info['username']} ! Prêt pour l'action ?",
+        f"⚡ {user_info['username']} ! Votre équipe compte sur vous !",
+        f"🚀 Mission en cours, agent {user_info['username']} !",
+        f"🛡️ {user_info['username']} ! L'aventure continue !",
+        f"⭐ Bienvenue dans votre QG, {user_info['username']} !"
+    ]
+    
+    st.success(random.choice(messages_app))
+    
+    # Navigation simple pour tester
+    if st.button("🚪 Se déconnecter"):
+        # Messages de déconnexion marrants
+        messages_deconnexion = [
+            "👋 À bientôt ! Votre équipe vous attend !",
+            "🚀 Mission terminée ! Bon repos, agent !",
+            "⭐ Déconnexion réussie ! Revenez vite !",
+            "🛡️ Au revoir ! Gardez l'esprit d'équipe !",
+            "🎯 À la prochaine mission !"
+        ]
+        
+        st.info(random.choice(messages_deconnexion))
+        time.sleep(1)
+        st.session_state.clear()
+        st.session_state.page = 'login'
+        st.rerun()
+    
+    st.markdown("### 🛡️ Application FLUX/PARA")
+    st.info("Interface principale en cours de développement...")
+    
+    # Afficher les infos utilisateur
+    with st.expander("👤 Mes informations"):
+        st.write(f"**Nom:** {user_info['username']}")
+        st.write(f"**Rôle:** {user_info['role']}")
+        st.write(f"**Équipe:** {user_info['equipe']}")
+        st.write(f"**Fonction:** {user_info['fonction']}")
+        st.write(f"**Couleur préférée:** {user_info['couleur_preferee']}")
 
 def show_admin_articles():
     """Page de gestion des articles - ADMIN et contremaîtres autorisés"""
@@ -2629,8 +2849,8 @@ def get_user_orders(user_id):
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, date, total, status, articles 
-                FROM orders 
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
                 WHERE user_id = %s 
                 ORDER BY date DESC
             """, (user_id,))
@@ -2638,8 +2858,8 @@ def get_user_orders(user_id):
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, date, total, status, articles 
-                FROM orders 
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
                 WHERE user_id = ? 
                 ORDER BY date DESC
             """, (user_id,))
