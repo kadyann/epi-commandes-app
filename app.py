@@ -46,65 +46,121 @@ else:
     USE_POSTGRESQL = False
 
 # === CHARGEMENT DES DONNÉES ===
-@st.cache_data(ttl=60)  # Cache pendant 60 secondes seulement
+@st.cache_data(ttl=60)
 def load_articles():
-    """Charge les articles depuis le fichier CSV avec gestion d'erreurs"""
+    """Charge les articles depuis le fichier CSV avec gestion d'erreurs robuste"""
     try:
-        # Essayer de lire le CSV avec gestion d'erreurs
-        df = pd.read_csv('articles.csv', on_bad_lines='skip', encoding='utf-8')
+        # Essayer plusieurs méthodes de lecture
+        try:
+            # Méthode 1: Lecture standard avec gestion d'erreurs
+            df = pd.read_csv('articles.csv', on_bad_lines='skip', encoding='utf-8')
+        except:
+            try:
+                # Méthode 2: Avec séparateur point-virgule
+                df = pd.read_csv('articles.csv', sep=';', on_bad_lines='skip', encoding='utf-8')
+            except:
+                try:
+                    # Méthode 3: Avec engine python (plus lent mais plus robuste)
+                    df = pd.read_csv('articles.csv', engine='python', on_bad_lines='skip', encoding='utf-8')
+                except:
+                    # Méthode 4: Lecture ligne par ligne pour identifier le problème
+                    st.warning("⚠️ Problème détecté dans le CSV, nettoyage en cours...")
+                    df = read_csv_safe('articles.csv')
         
         # Vérifier que les colonnes essentielles existent
         required_columns = ['Nom', 'Prix', 'Description']
-        missing_columns = [col for col in required_columns if col not in df.columns]
         
-        if missing_columns:
-            st.error(f"❌ Colonnes manquantes dans articles.csv: {missing_columns}")
-            return create_sample_articles()
+        # Si les colonnes n'existent pas, essayer de les mapper
+        if 'Nom' not in df.columns:
+            # Mapper les colonnes du CSV actuel
+            column_mapping = {
+                'N° Référence': 'Référence',
+                'Nom': 'Nom', 
+                'Description': 'Description',
+                'Prix': 'Prix',
+                'Unitée': 'Unité'
+            }
+            df = df.rename(columns=column_mapping)
         
         # Nettoyer les données
         df = df.dropna(subset=['Nom', 'Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
         df = df.dropna(subset=['Prix'])
         
+        # Ajouter la colonne Description si elle manque
+        if 'Description' not in df.columns:
+            df['Description'] = df['Nom']
+        
         st.success(f"✅ {len(df)} articles chargés avec succès")
         return df
         
-    except FileNotFoundError:
-        st.error("❌ Fichier articles.csv introuvable")
-        return create_sample_articles()
-    except pd.errors.ParserError as e:
-        st.error(f"❌ Erreur de format CSV: {e}")
-        st.info("💡 Tentative de lecture avec paramètres alternatifs...")
-        
-        try:
-            # Essayer avec d'autres paramètres
-            df = pd.read_csv('articles.csv', 
-                           sep=';',  # Essayer avec point-virgule
-                           on_bad_lines='skip',
-                           encoding='utf-8')
-            st.success(f"✅ {len(df)} articles chargés (format alternatif)")
-            return df
-        except:
-            st.error("❌ Impossible de lire le fichier CSV")
-            return create_sample_articles()
     except Exception as e:
-        st.error(f"❌ Erreur inattendue: {e}")
+        st.error(f"❌ Erreur lecture CSV: {e}")
+        st.info("🔄 Utilisation d'articles d'exemple...")
         return create_sample_articles()
 
+
+def read_csv_safe(filename):
+    """Lecture sécurisée du CSV ligne par ligne"""
+    import csv
+    data = []
+    
+    try:
+        with open(filename, 'r', encoding='utf-8') as file:
+            # Lire la première ligne pour les en-têtes
+            first_line = file.readline().strip()
+            headers = first_line.split(',')
+            
+            # Lire le reste ligne par ligne
+            for line_num, line in enumerate(file, 2):
+                try:
+                    # Nettoyer la ligne
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Séparer les champs
+                    fields = line.split(',')
+                    
+                    # Si trop de champs, prendre seulement les premiers
+                    if len(fields) > len(headers):
+                        fields = fields[:len(headers)]
+                    
+                    # Si pas assez de champs, compléter avec des valeurs vides
+                    while len(fields) < len(headers):
+                        fields.append('')
+                    
+                    # Créer un dictionnaire
+                    row_dict = dict(zip(headers, fields))
+                    data.append(row_dict)
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Ligne {line_num} ignorée: {e}")
+                    continue
+        
+        # Créer le DataFrame
+        df = pd.DataFrame(data)
+        return df
+        
+    except Exception as e:
+        st.error(f"❌ Erreur lecture manuelle: {e}")
+        return create_sample_articles()
 
 def create_sample_articles():
     """Crée des articles d'exemple si le CSV ne peut pas être lu"""
     st.warning("⚠️ Utilisation d'articles d'exemple")
     
     sample_data = {
-        'Nom': [
-            'Chaussures de sécurité JALAS Taille 42',
-            'Veste Blouson FLUX/PARA Taille L',
-            'Gants de protection Taille 9',
-            'Casque de sécurité blanc',
-            'Lunettes de protection'
+        'N° Référence': [
+            '40953', '34528', '41074', '334', '37386'
         ],
-        'Prix': [89.90, 125.50, 15.20, 45.00, 12.50],
+        'Nom': [
+            'Chaussure de sécurité JALAS Taille 42',
+            'Blouson Orange Taille L',
+            'Gants RIG ROG Taille 9',
+            'Casque Polyester Blanc',
+            'Bollé Transparente TRACPSI'
+        ],
         'Description': [
             'Chaussures',
             'Veste Blouson', 
@@ -112,12 +168,9 @@ def create_sample_articles():
             'Casque',
             'Lunette'
         ],
-        'Référence': [
-            'JALAS-42',
-            'VEST-L-001',
-            'GANT-9-001',
-            'CASQ-001',
-            'LUN-001'
+        'Prix': [99.90, 105.00, 8.80, 22.99, 10.50],
+        'Unitée': [
+            'Par paire', 'Par Veste', 'La paire', 'Par casque', 'Par unitée'
         ]
     }
     
