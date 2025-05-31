@@ -693,49 +693,36 @@ def show_register():
     st.markdown("### 📝 Créer un compte")
     
     with st.form("register_form"):
+        username = st.text_input("👤 Nom d'utilisateur")
+        password = st.text_input("🔒 Mot de passe", type="password")
+        confirm_password = st.text_input("🔒 Confirmer mot de passe", type="password")
+        equipe = st.text_input("🏢 Équipe")
+        fonction = st.selectbox("⚙️ Fonction", ["", "Contremaître", "RTZ", "Technicien"])
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            username = st.text_input("👤 Nom d'utilisateur", placeholder="Votre nom d'utilisateur")
-            password = st.text_input("🔒 Mot de passe", type="password", placeholder="Votre mot de passe")
-            confirm_password = st.text_input("🔒 Confirmer mot de passe", type="password", placeholder="Confirmez votre mot de passe")
+            if st.form_submit_button("✅ Créer le compte", use_container_width=True):
+                if not username or not password:
+                    st.error("❌ Veuillez remplir tous les champs obligatoires")
+                elif password != confirm_password:
+                    st.error("❌ Les mots de passe ne correspondent pas")
+                elif len(password) < 4:
+                    st.error("❌ Le mot de passe doit contenir au moins 4 caractères")
+                else:
+                    success, message = create_user(username, password, equipe, fonction)
+                    if success:
+                        st.success(f"✅ {message}")
+                        time.sleep(2)
+                        st.session_state.page = "login"
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
         
         with col2:
-            equipe = st.text_input("👷‍♂️ Équipe", placeholder="Ex: Équipe A, Équipe B...")
-            
-            # Liste déroulante pour les fonctions
-            fonction = st.selectbox(
-                "🔧 Fonction",
-                options=["", "Contremaître", "RTZ", "Technicien"],
-                index=0,
-                help="Sélectionnez votre fonction"
-            )
-        
-        submitted = st.form_submit_button("✅ Créer le compte", use_container_width=True)
-        
-        if submitted:
-            if not username or not password or not confirm_password:
-                st.error("❌ Veuillez remplir tous les champs obligatoires")
-            elif password != confirm_password:
-                st.error("❌ Les mots de passe ne correspondent pas")
-            elif len(password) < 6:
-                st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
-            elif not fonction:
-                st.error("❌ Veuillez sélectionner une fonction")
-            else:
-                # Créer le compte
-                if create_user(username, password, equipe, fonction):
-                    st.success("✅ Compte créé avec succès ! Vous pouvez maintenant vous connecter.")
-                    time.sleep(2)
-                    st.session_state.page = "login"
-                    st.rerun()
-                else:
-                    st.error("❌ Erreur lors de la création du compte (nom d'utilisateur déjà pris ?)")
-    
-    st.markdown("---")
-    if st.button("← Retour à la connexion"):
-        st.session_state.page = "login"
-        st.rerun()
+            if st.form_submit_button("← Retour à la connexion", use_container_width=True):
+                st.session_state.page = "login"
+                st.rerun()
 
 def show_catalogue():
     """Affiche le catalogue des articles"""
@@ -2515,29 +2502,39 @@ def update_user_permissions(user_id, permissions):
 def create_user(username, password, equipe=None, fonction=None):
     """Crée un nouvel utilisateur"""
     try:
+        # Validation des données
+        if not username or len(username.strip()) < 3:
+            return False, "Le nom d'utilisateur doit contenir au moins 3 caractères"
+        
+        if not password or len(password) < 4:
+            return False, "Le mot de passe doit contenir au moins 4 caractères"
+        
         # Hasher le mot de passe
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (username, password, equipe, fonction) 
+                VALUES (%s, %s, %s, %s)
+            """, (username.strip(), password_hash, equipe, fonction))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        # Insérer le nouvel utilisateur (sans email)
-        cursor.execute("""
-            INSERT INTO users (username, password, equipe, fonction) 
-            VALUES (?, ?, ?, ?)
-        """, (username, password_hash, equipe, fonction))
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (username, password, equipe, fonction) 
+                VALUES (?, ?, ?, ?)
+            """, (username.strip(), password_hash, equipe, fonction))
         
         conn.commit()
         conn.close()
-        return True
+        return True, "Utilisateur créé avec succès"
         
     except Exception as e:
-        st.error(f"Erreur création utilisateur: {e}")
-        return False
+        if "UNIQUE constraint failed" in str(e) or "duplicate key" in str(e):
+            return False, "Ce nom d'utilisateur existe déjà"
+        return False, f"Erreur création utilisateur: {e}"
 
 def get_category_emoji(category):
     """Retourne l'emoji correspondant à chaque catégorie"""
