@@ -46,7 +46,7 @@ else:
     USE_POSTGRESQL = False
 
 # === CHARGEMENT DES DONNÉES ===
-@st.cache_data
+@st.cache_data(ttl=60)  # Cache pendant 60 secondes seulement
 def load_articles():
     """Charge les articles depuis le fichier CSV avec gestion d'erreurs"""
     try:
