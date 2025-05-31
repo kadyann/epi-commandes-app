@@ -693,8 +693,8 @@ def show_login():
                 st.session_state.page = "register"
                 st.rerun()
     
-    # Afficher les comptes de test
-    st.info("💡 **Compte administrateur de test :**\n- Utilisateur: `admin`\n- Mot de passe: `admin123`")
+    # Masquer les identifiants admin - seulement en développement
+    # st.info("💡 **Compte administrateur de test :**\n- Utilisateur: `admin`\n- Mot de passe: `admin123`")
 
 def show_register():
     """Page d'inscription"""
@@ -2524,16 +2524,16 @@ def create_user(username, password, equipe=None, fonction=None):
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (username, password, equipe, fonction) 
-                VALUES (%s, %s, %s, %s)
-            """, (username.strip(), password_hash, equipe, fonction))
+                INSERT INTO users (username, password, role, equipe, fonction) 
+                VALUES (%s, %s, %s, %s, %s)
+            """, (username.strip(), password_hash, 'user', equipe, fonction))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (username, password, equipe, fonction) 
-                VALUES (?, ?, ?, ?)
-            """, (username.strip(), password_hash, equipe, fonction))
+                INSERT INTO users (username, password, role, equipe, fonction) 
+                VALUES (?, ?, ?, ?, ?)
+            """, (username.strip(), password_hash, 'user', equipe, fonction))
         
         conn.commit()
         conn.close()
