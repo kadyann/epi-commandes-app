@@ -2232,7 +2232,7 @@ def main():
             show_orders_history()  # Utilisez celle-ci au lieu de show_historique()
         elif page == "stats":
             if has_perm(get_current_user(), PERM_VIEW_STATS):
-                show_stats_page()
+                show_stats()                     # ← appel de la bonne fonction
             else:
                 st.warning("⛔ Accès réservé.")
         elif page == "mes_commandes":
@@ -2241,7 +2241,7 @@ def main():
             show_admin_articles()
         elif page == "admin_users":
             show_admin_page()  # (au lieu de show_admin_users)
-        elif page == "👥 Utilisateurs":
+        elif page == "👤 Utilisateurs":
             if get_current_user() and get_current_user()["role"] == "admin":
                 show_user_admin_page()
             else:
@@ -3957,6 +3957,106 @@ def get_ref_col(df: pd.DataFrame) -> str:
             return col
     # dernier recours : on prend la première colonne
     return df.columns[0]
+
+def show_user_admin_page() -> None:
+    st.markdown("## 👥 Gestion des utilisateurs – Administration")
+    st.write("---")
+
+    # ------ FORMULAIRE DE CRÉATION ---------------------------------
+    with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            new_username = st.text_input("Nom d'utilisateur*")
+            new_password = st.text_input("Mot de passe*", type="password")
+            new_equipe   = st.text_input("Équipe", value="para")
+            new_fonction = st.text_input("Fonction", value="contremaître")
+
+        with col2:
+            st.markdown("### Permissions")
+            p_add   = st.checkbox("Peut ajouter des articles")
+            p_stats = st.checkbox("Peut voir les statistiques")
+            p_all   = st.checkbox("Peut voir toutes les commandes")
+            role    = st.selectbox("Rôle", ["user", "contremaitre", "admin"])
+
+        if st.button("Créer l'utilisateur", use_container_width=True):
+            ok, msg = create_new_user(
+                new_username,
+                new_password,
+                new_equipe,
+                new_fonction,
+                role,
+                p_add,
+                p_stats,
+                p_all,
+            )
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+
+    # ------ LISTE & ÉDITION ----------------------------------------
+    st.markdown("### 📄 Utilisateurs existants")
+    for (
+        uid,
+        uname,
+        role,
+        equipe,
+        fonction,
+        p_add,
+        p_stats,
+        p_all,
+    ) in get_all_users():
+        with st.expander(f"👤 {uname} – {role.upper()} ({equipe})", expanded=False):
+            st.write(f"ID : {uid}")
+            st.write(f"Fonction : {fonction}")
+            st.write("#### ✏️ Modifier")
+
+            e_role   = st.selectbox(
+                "Rôle",
+                ["user", "contremaitre", "admin"],
+                index=["user", "contremaitre", "admin"].index(role),
+                key=f"role_{uid}",
+            )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                e_add = st.checkbox(
+                    "Ajouter articles",
+                    value=bool(p_add),
+                    key=f"add_{uid}",
+                )
+            with c2:
+                e_stats = st.checkbox(
+                    "Voir stats",
+                    value=bool(p_stats),
+                    key=f"stats_{uid}",
+                )
+            with c3:
+                e_all = st.checkbox(
+                    "Toutes commandes",
+                    value=bool(p_all),
+                    key=f"all_{uid}",
+                )
+
+            b_save, b_del = st.columns(2)
+            with b_save:
+                if st.button(
+                    "💾 Sauvegarder",
+                    key=f"save_{uid}",
+                    use_container_width=True,
+                ):
+                    update_user_permissions(uid, e_role, e_add, e_stats, e_all)
+                    st.success("Mis à jour.")
+                    st.rerun()
+
+            with b_del:
+                if st.button(
+                    f"🗑️ Supprimer {uname}",
+                    key=f"del_{uid}",
+                    use_container_width=True,
+                ):
+                    delete_user(uid)
+                    st.warning("Utilisateur supprimé.")
+                    st.rerun()
 
 if __name__ == "__main__":
     main()
