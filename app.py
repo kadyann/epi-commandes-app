@@ -831,38 +831,71 @@ def show_login():
         st.rerun()
 
 def show_register():
-    """Page d'inscription avec messages marrants"""
-    st.markdown("### 📝 Inscription FLUX/PARA")
-    
-    # Message d'accueil marrant
-    messages_inscription = [
-        "🎪 Rejoignez le cirque... euh, l'équipe !",
-        "🚀 Prêt à devenir un super-contremaître ?",
-        "⭐ Bienvenue dans l'élite de l'équipement !",
-        "🎯 Inscription express pour mission équipement !",
-        "🛡️ Rejoignez la garde d'élite FLUX/PARA !"
-    ]
-    
-    st.info(random.choice(messages_inscription))
+    """Page d'inscription avec rôles prédéfinis"""
+    st.markdown("### 📝 Inscription - Nouveau compte FLUX/PARA")
     
     with st.form("register_form"):
-        username = st.text_input("👤 Nom d'utilisateur")
-        password = st.text_input("🔑 Mot de passe", type="password")
-        confirm_password = st.text_input("🔑 Confirmer le mot de passe", type="password")
+        st.markdown("🛡️ **Rejoignez l'équipe FLUX/PARA !**")
         
-        # Sélection d'équipe
-        equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"]
-        equipe = st.selectbox("👷‍♂️ Équipe", equipes)
+        col1, col2 = st.columns(2)
         
-        fonction = st.text_input("💼 Fonction")
-        couleur_preferee = st.text_input("🎨 Couleur préférée (pour récupération mot de passe)", 
-                                       placeholder="Ex: bleu, rouge, vert...")
+        with col1:
+            username = st.text_input("👤 Nom d'utilisateur*", placeholder="votre.nom")
+            password = st.text_input("🔒 Mot de passe*", type="password", help="Minimum 6 caractères")
+            confirm_password = st.text_input("🔒 Confirmer le mot de passe*", type="password")
+            
+            # Sélection d'équipe
+            equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"]
+            equipe = st.selectbox("👷‍♂️ Équipe*", ["Sélectionnez..."] + equipes)
         
-        submitted = st.form_submit_button("📝 S'inscrire", use_container_width=True)
+        with col2:
+            # NOUVEAU: Menu déroulant avec rôles prédéfinis
+            fonctions_predefinies = [
+                "CONTREMAÎTRE", 
+                "RTZ", 
+                "GESTIONNAIRE",
+                "OPÉRATEUR",
+                "TECHNICIEN",
+                "RESPONSABLE SÉCURITÉ",
+                "CHEF D'ÉQUIPE",
+                "AGENT QUALITÉ",
+                "LOGISTICIEN",
+                "AUTRE"
+            ]
+            
+            fonction = st.selectbox("💼 Fonction/Poste*", 
+                                  ["Sélectionnez votre poste..."] + fonctions_predefinies)
+            
+            # Si "AUTRE" est sélectionné, permettre la saisie libre
+            if fonction == "AUTRE":
+                fonction_custom = st.text_input("✏️ Précisez votre fonction:", placeholder="Ex: Apprenti, Stagiaire...")
+                fonction = fonction_custom if fonction_custom else fonction
+            
+            couleur_preferee = st.text_input("🎨 Couleur préférée*", 
+                                           placeholder="Ex: bleu, rouge, vert...",
+                                           help="Question de sécurité pour récupérer votre mot de passe")
+        
+        st.markdown("---")
+        st.markdown("**Permissions automatiques selon le poste :**")
+        
+        # Affichage des permissions selon la fonction
+        if fonction in ["CONTREMAÎTRE", "RTZ", "GESTIONNAIRE"]:
+            st.success("🎖️ **Poste à responsabilité** - Accès étendu automatiquement accordé")
+            st.info("✅ Accès aux statistiques • ✅ Consultation des commandes • ✅ Gestion articles")
+        elif fonction in ["CHEF D'ÉQUIPE", "RESPONSABLE SÉCURITÉ"]:
+            st.info("👨‍💼 **Encadrement** - Accès limité aux statistiques")
+            st.info("✅ Accès aux statistiques • ❌ Gestion articles")
+        else:
+            st.info("👤 **Utilisateur standard** - Accès de base au catalogue")
+        
+        submitted = st.form_submit_button("🚀 Créer mon compte", use_container_width=True)
         
         if submitted:
-            if not all([username, password, confirm_password, fonction, couleur_preferee]):
-                st.error("❌ Veuillez remplir tous les champs")
+            # Validation avec les nouveaux champs
+            if not all([username, password, confirm_password, fonction != "Sélectionnez votre poste...", couleur_preferee]):
+                st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
+            elif equipe == "Sélectionnez...":
+                st.error("❌ Veuillez sélectionner votre équipe")
             elif password != confirm_password:
                 st.error("❌ Les mots de passe ne correspondent pas")
             elif len(password) < 6:
@@ -870,15 +903,25 @@ def show_register():
             else:
                 success, message = create_user(username, password, equipe, fonction, couleur_preferee)
                 if success:
-                    # Messages de succès marrants
-                    messages_succes = [
-                        "🎉 Inscription réussie ! Bienvenue dans l'équipe !",
-                        "⭐ Félicitations ! Vous êtes maintenant un agent FLUX/PARA !",
-                        "🚀 Mission accomplie ! Vous pouvez maintenant vous connecter !",
-                        "🛡️ Bienvenue dans l'élite ! Connexion autorisée !",
-                        "🎯 Inscription validée ! Prêt pour l'action !"
-                    ]
+                    # Messages de succès selon la fonction
+                    if fonction in ["CONTREMAÎTRE", "RTZ", "GESTIONNAIRE"]:
+                        messages_succes = [
+                            f"🎖️ Inscription réussie ! Bienvenue {fonction} !",
+                            f"⭐ Félicitations ! Vous êtes maintenant {fonction} FLUX/PARA !",
+                            f"🚀 Mission accomplie ! {fonction} activé avec succès !",
+                        ]
+                    else:
+                        messages_succes = [
+                            "🎉 Inscription réussie ! Bienvenue dans l'équipe !",
+                            "⭐ Félicitations ! Vous êtes maintenant un agent FLUX/PARA !",
+                            "🛡️ Bienvenue dans l'élite ! Connexion autorisée !",
+                        ]
+                    
                     st.success(random.choice(messages_succes))
+                    
+                    # Attribution automatique des permissions selon la fonction
+                    assign_permissions_by_function(username, fonction)
+                    
                     time.sleep(2)
                     st.session_state.page = 'login'
                     st.rerun()
@@ -888,116 +931,6 @@ def show_register():
     if st.button("← Retour à la connexion"):
         st.session_state.page = 'login'
         st.rerun()
-
-def show_catalogue():
-    """Affiche le catalogue des articles"""
-    st.markdown("### 🛡️ Catalogue FLUX/PARA")
-    
-    budget_used = calculate_cart_total()
-    budget_remaining = MAX_CART_AMOUNT - budget_used
-    
-    if budget_remaining > 0:
-        st.success(f"💰 Budget disponible: {budget_remaining:.2f}€ (secteur FLUX/PARA)")
-    else:
-        st.error(f"🚨 Budget FLUX/PARA dépassé de {abs(budget_remaining):.2f}€ !")
-    
-    with st.sidebar:
-        show_cart_sidebar()
-    
-    categories = articles_df['Description'].unique()
-    
-    if not st.session_state.get('selected_category'):
-        st.markdown("### 📋 Sélectionnez une catégorie")
-        
-        cols = st.columns(3)
-        for i, category in enumerate(categories):
-            with cols[i % 3]:
-                emoji = get_category_emoji(category)
-                if st.button(f"{emoji} {category}", key=f"cat_{category}", use_container_width=True):
-                    st.session_state.selected_category = category
-                    st.rerun()
-    else:
-        category = st.session_state.selected_category
-        emoji = get_category_emoji(category)
-        
-        if st.button("← Retour aux catégories"):
-            st.session_state.selected_category = None
-            st.rerun()
-        
-        st.markdown(f"#### {emoji} {category}")
-        
-        articles_category = articles_df[articles_df['Description'] == category]
-        
-        # Regrouper les articles par nom de base
-        articles_groupes = {}
-        for idx, article in articles_category.iterrows():
-            nom_complet = article['Nom']
-            
-            if 'taille' in nom_complet.lower():
-                taille_match = re.search(r'taille\s+([a-zA-Z0-9?]+)', nom_complet, re.IGNORECASE)
-                if taille_match:
-                    taille = taille_match.group(1)
-                    nom_base = re.sub(r'\s+taille\s+[a-zA-Z0-9?]+', '', nom_complet, flags=re.IGNORECASE).strip()
-                else:
-                    nom_base = nom_complet
-                    taille = "?"
-            else:
-                nom_base = nom_complet
-                taille = None
-            
-            if nom_base not in articles_groupes:
-                articles_groupes[nom_base] = {
-                    'prix': float(article['Prix']),
-                    'tailles': {},
-                    'article_simple': None
-                }
-            
-            if taille:
-                articles_groupes[nom_base]['tailles'][taille] = {'article': article, 'index': idx}
-            else:
-                articles_groupes[nom_base]['article_simple'] = {'article': article, 'index': idx}
-        
-        # Afficher les groupes
-        for nom_base, infos in articles_groupes.items():
-            with st.container():
-                st.markdown(f"### {nom_base}")
-                st.markdown(f"💰 **{infos['prix']:.2f}€**")
-                
-                if infos['tailles']:
-                    st.markdown("**Tailles disponibles:**")
-                    
-                    def sort_tailles_intelligent(item):
-                        taille = item[0]
-                        tailles_lettres = {'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5, 'XXL': 6, 'XXXL': 7}
-                        
-                        if taille in tailles_lettres:
-                            return (0, tailles_lettres[taille])
-                        
-                        try:
-                            return (1, int(taille))
-                        except (ValueError, TypeError):
-                            return (2, taille)
-                    
-                    tailles_triees = sorted(infos['tailles'].items(), key=sort_tailles_intelligent)
-                    
-                    for i in range(0, len(tailles_triees), 6):
-                        cols = st.columns(6)
-                        for j, (taille, data) in enumerate(tailles_triees[i:i+6]):
-                            with cols[j]:
-                                if st.button(f"🛒 {taille}", key=f"taille_{data['index']}", use_container_width=True):
-                                    add_to_cart(data['article'], 1)
-                                    st.toast(f"✅ Taille {taille} ajoutée !", icon="✅")
-                                    st.rerun()
-                else:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        quantity = st.number_input("Quantité", min_value=1, max_value=50, value=1, key=f"qty_{infos['article_simple']['index']}")
-                    with col2:
-                        if st.button("➕ Ajouter", key=f"add_{infos['article_simple']['index']}", use_container_width=True):
-                            add_to_cart(infos['article_simple']['article'], quantity)
-                            st.rerun()
-                
-                st.divider()
 
 def show_cart():
     """Affiche le panier complet"""
@@ -2028,16 +1961,15 @@ def show_stats():
         st.error(f"Erreur chargement statistiques: {e}")
 
 def show_historique():
-    """Page d'historique des commandes - Selon permissions"""
+    """Affiche l'historique des commandes avec correction parsing articles"""
     user_info = st.session_state.get('current_user', {})
     
-    # Vérifier les droits
+    # Vérifier les droits d'accès
     if not user_can_view_all_orders():
         st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation de voir toutes les commandes")
         st.info("Contactez un administrateur pour obtenir cette permission.")
         return
     
-    # Titre selon le rôle
     if user_info.get('role') == 'admin':
         st.markdown("### 📊 Historique global - Administration")
     else:
@@ -2048,28 +1980,40 @@ def show_historique():
             conn = psycopg2.connect(DATABASE_URL)
         else:
             conn = sqlite3.connect(DATABASE_PATH)
-        
         cursor = conn.cursor()
-    
-        # Récupérer toutes les commandes
-        cursor.execute("""
-            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
-            FROM commandes 
-            ORDER BY date DESC
-        """)
+
+        # DEBUG: AJOUTEZ CES LIGNES ICI
+        st.write("🔍 **DIAGNOSTIC BASE DE DONNÉES**")
+        try:
+            if USE_POSTGRESQL:
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'commandes'
+                    ORDER BY ordinal_position
+                """)
+            else:
+                cursor.execute("PRAGMA table_info(commandes)")
+            
+            colonnes = cursor.fetchall()
+            st.write(f"🔍 **COLONNES DISPONIBLES:** {[col[0] for col in colonnes]}")
+            
+        except Exception as debug_e:
+            st.error(f"Debug error: {debug_e}")
+        
+        # Maintenant essayez une requête simple
+        cursor.execute("SELECT * FROM commandes LIMIT 1")
         
         commandes = cursor.fetchall()
         conn.close()
-    
+
         if not commandes:
             st.info("📭 Aucune commande trouvée")
             return
-    
-        # Afficher les commandes
+
         for commande in commandes:
-            commande_id, date, contremaitre, equipe, articles_json, total_prix, nb_articles = commande
+            commande_id, date, contremaitre, equipe, articles_json, total_prix, commentaire = commande
             
-            # Colonnes pour l'affichage et la suppression (admin seulement)
             if user_info.get('role') == 'admin':
                 col1, col2 = st.columns([4, 1])
             else:
@@ -2087,32 +2031,37 @@ def show_historique():
                     
                     with col_info2:
                         st.markdown(f"**💰 Total:** {total_prix:.2f}€")
-                        st.markdown(f"**📦 Nb articles:** {nb_articles}")
+                        st.markdown(f"**📦 Nb articles:** {len(json.loads(articles_json))}")
                     
-                    # Afficher les articles
-                    try:
-                        articles = json.loads(articles_json)
-                        grouped_articles = grouper_articles_panier(articles)
-                        
+                    if articles_json:
                         st.markdown("**Articles commandés:**")
-                        for group in grouped_articles:
-                            article = group['article']
-                            quantite = group['quantite']
-                            prix_total = float(article['Prix']) * quantite
-                            st.markdown(f"• {article['Nom']} - Quantité: {quantite} - {prix_total:.2f}€")
+                        # AFFICHAGE SIMPLE DES NOMS D'ARTICLES
+                        try:
+                            articles_list = json.loads(articles_json)
+                            st.write(f"**Nombre d'articles:** {len(articles_list)}")
                             
-                    except Exception as e:
-                        st.error(f"Erreur affichage articles: {e}")
+                            for article in articles_list:
+                                if isinstance(article, dict) and 'Nom' in article:
+                                    st.write(f"• {article['Nom']}")
+                                elif isinstance(article, dict):
+                                    # Si pas de 'Nom', essayer d'autres clés
+                                    nom = article.get('nom', article.get('name', 'Article sans nom'))
+                                    st.write(f"• {nom}")
+                                else:
+                                    st.write(f"• {str(article)}")
+                                
+                        except Exception as e:
+                            st.write(f"**Erreur affichage articles:** {e}")
+                    else:
+                        st.write("📭 Aucun article dans cette commande")
             
-            # Bouton de suppression pour admin seulement
             if user_info.get('role') == 'admin' and col2:
                 with col2:
-                    st.write("")  # Espacement
+                    st.write("")
                     if st.button(f"🗑️ Supprimer", key=f"delete_{commande_id}", type="secondary"):
                         st.session_state[f"confirm_delete_{commande_id}"] = True
                         st.rerun()
                     
-                    # Confirmation de suppression
                     if st.session_state.get(f"confirm_delete_{commande_id}", False):
                         st.warning("⚠️ Confirmer ?")
                         col_yes, col_no = st.columns(2)
@@ -2270,7 +2219,7 @@ def main():
         elif page == "validation":
             show_validation()
         elif page == "historique":
-            show_historique()
+            show_orders_history()  # Utilisez celle-ci au lieu de show_historique()
         elif page == "stats":
             show_stats()
         elif page == "mes_commandes":
@@ -2525,86 +2474,278 @@ def import_articles_from_csv(new_articles_df):
         return False
 
 def show_admin_users():
-    """Interface d'administration des utilisateurs"""
+    """Interface d'administration des utilisateurs avec gestion des permissions"""
     st.markdown("### 👥 Gestion des utilisateurs - Administration")
     
-    # Afficher la liste des utilisateurs
-    st.markdown("#### 📋 Liste des utilisateurs et permissions")
+    tab1, tab2 = st.tabs(["👤 Utilisateurs existants", "➕ Ajouter utilisateur"])
     
+    with tab1:
+        st.markdown("#### 📋 Liste des utilisateurs et permissions")
+        
+        try:
+            if USE_POSTGRESQL:
+                conn = psycopg2.connect(DATABASE_URL)
+            else:
+                conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, username, role, equipe, fonction, couleur_preferee
+                FROM users 
+                ORDER BY role DESC, username ASC
+            """)
+            
+            users = cursor.fetchall()
+            conn.close()
+            
+            if users:
+                for user in users:
+                    user_id, username, role, equipe, fonction, couleur = user
+                    
+                    role_emoji = "👑" if role == "admin" else "👤"
+                    
+                    with st.expander(f"{role_emoji} {username} ({role}) - {equipe or 'N/A'}"):
+                        col1, col2, col3 = st.columns([2, 2, 1])
+                        
+                        with col1:
+                            st.write(f"**Équipe:** {equipe or 'Non définie'}")
+                            st.write(f"**Fonction:** {fonction or 'Non définie'}")
+                            
+                            new_role = st.selectbox(
+                                "Rôle:", 
+                                ["user", "admin"], 
+                                index=0 if role == "user" else 1,
+                                key=f"role_{user_id}"
+                            )
+                        
+                        with col2:
+                            st.markdown("**🔐 Permissions individuelles:**")
+                            
+                            # Récupérer les permissions actuelles
+                            try:
+                                if USE_POSTGRESQL:
+                                    conn = psycopg2.connect(DATABASE_URL)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        SELECT can_add_articles, can_view_stats, can_view_all_orders 
+                                        FROM users WHERE id = %s
+                                    """, (user_id,))
+                                else:
+                                    conn = sqlite3.connect(DATABASE_PATH)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        SELECT can_add_articles, can_view_stats, can_view_all_orders 
+                                        FROM users WHERE id = ?
+                                    """, (user_id,))
+                                
+                                result = cursor.fetchone()
+                                conn.close()
+                                
+                                if result:
+                                    current_add_articles, current_view_stats, current_view_all = result
+                                else:
+                                    current_add_articles = current_view_stats = current_view_all = False
+                                
+                            except:
+                                current_add_articles = current_view_stats = current_view_all = False
+                            
+                            # Checkboxes pour chaque permission
+                            add_articles = st.checkbox(
+                                "📝 Peut ajouter des articles", 
+                                value=bool(current_add_articles),
+                                key=f"add_articles_{user_id}"
+                            )
+                            
+                            view_stats = st.checkbox(
+                                "📊 Peut voir les statistiques", 
+                                value=bool(current_view_stats),
+                                key=f"view_stats_{user_id}"
+                            )
+                            
+                            view_all_orders = st.checkbox(
+                                "👀 Peut voir toutes les commandes", 
+                                value=bool(current_view_all),
+                                key=f"view_all_{user_id}"
+                            )
+                            
+                            # Bouton pour appliquer les changements
+                            if st.button(f"💾 Sauvegarder permissions", key=f"save_perms_{user_id}"):
+                                permissions = {
+                                    'role': new_role,
+                                    'can_add_articles': add_articles,
+                                    'can_view_stats': view_stats,
+                                    'can_view_all_orders': view_all_orders
+                                }
+                                
+                                if update_user_permissions(user_id, permissions):
+                                    st.success("✅ Permissions mises à jour !")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Erreur mise à jour")
+                            
+                            # Boutons d'actions rapides en dessous
+                            st.markdown("**⚡ Actions rapides:**")
+                            
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                if st.button(f"🎖️ Chef", key=f"make_chief_{user_id}", help="Tous les accès"):
+                                    permissions = {
+                                        'role': 'user',
+                                        'can_add_articles': True,
+                                        'can_view_stats': True,
+                                        'can_view_all_orders': True
+                                    }
+                                    if update_user_permissions(user_id, permissions):
+                                        st.success("✅ Promu chef")
+                                        st.rerun()
+                            
+                            with col_b:
+                                if st.button(f"🚫 Aucun", key=f"revoke_{user_id}", help="Révoquer tous"):
+                                    permissions = {
+                                        'role': 'user',
+                                        'can_add_articles': False,
+                                        'can_view_stats': False,
+                                        'can_view_all_orders': False
+                                    }
+                                    if update_user_permissions(user_id, permissions):
+                                        st.success("✅ Accès révoqués")
+                                        st.rerun()
+            else:
+                st.info("Aucun utilisateur trouvé")
+                
+        except Exception as e:
+            st.error(f"Erreur: {e}")
+    
+    with tab2:
+        st.markdown("#### ➕ Créer un nouvel utilisateur")
+        
+        with st.form("create_user_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                username = st.text_input("👤 Nom d'utilisateur*")
+                password = st.text_input("🔒 Mot de passe*", type="password", help="Minimum 6 caractères")
+                equipe = st.selectbox("👷‍♂️ Équipe*", 
+                    ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"])
+            
+            with col2:
+                # NOUVEAU: Menu déroulant avec rôles prédéfinis
+                fonctions_predefinies = [
+                    "CONTREMAÎTRE", 
+                    "RTZ", 
+                    "GESTIONNAIRE",
+                    "OPÉRATEUR",
+                    "TECHNICIEN",
+                    "RESPONSABLE SÉCURITÉ",
+                    "CHEF D'ÉQUIPE",
+                    "AGENT QUALITÉ",
+                    "LOGISTICIEN",
+                    "AUTRE"
+                ]
+                
+                fonction = st.selectbox("💼 Fonction/Poste*", 
+                                      ["Sélectionnez le poste..."] + fonctions_predefinies)
+                
+                # Si "AUTRE" est sélectionné, permettre la saisie libre
+                if fonction == "AUTRE":
+                    fonction_custom = st.text_input("✏️ Précisez la fonction:", placeholder="Ex: Apprenti, Stagiaire...")
+                    fonction = fonction_custom if fonction_custom else fonction
+                
+                couleur = st.text_input("🎨 Couleur préférée*", placeholder="Ex: bleu, rouge, vert...")
+                role = st.selectbox("🎭 Rôle administratif", ["user", "admin"], 
+                                   help="Admin = accès total • User = selon fonction")
+            
+            st.markdown("---")
+            st.markdown("**📋 Aperçu des permissions selon le poste :**")
+            
+            # Affichage des permissions selon la fonction
+            if fonction in ["CONTREMAÎTRE", "RTZ", "GESTIONNAIRE"]:
+                st.success("🎖️ **Poste à responsabilité** - Accès étendu automatique")
+                st.info("✅ Accès aux statistiques • ✅ Consultation des commandes • ✅ Gestion articles")
+                auto_permissions = "RESPONSABILITÉ"
+            elif fonction in ["CHEF D'ÉQUIPE", "RESPONSABLE SÉCURITÉ"]:
+                st.info("👨‍💼 **Encadrement** - Accès aux statistiques")
+                st.info("✅ Accès aux statistiques • ❌ Gestion articles")
+                auto_permissions = "ENCADREMENT"
+            else:
+                st.info("👤 **Utilisateur standard** - Accès de base au catalogue")
+                auto_permissions = "STANDARD"
+            
+            submitted = st.form_submit_button("✅ Créer utilisateur", use_container_width=True)
+            
+            if submitted:
+                # Validation avec les nouveaux champs
+                if not all([username, password, fonction != "Sélectionnez le poste...", couleur]):
+                    st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
+                elif len(password) < 6:
+                    st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
+                else:
+                    success, message = create_user(username, password, equipe, fonction, couleur)
+                    if success:
+                        # Attribution automatique des permissions selon la fonction
+                        assign_permissions_by_function(username, fonction)
+                        
+                        # Message de succès avec récapitulatif
+                        st.success("✅ Utilisateur créé avec succès !")
+                        st.info(f"🎯 **{username}** créé avec le profil **{auto_permissions}**")
+                        
+                        # Afficher un récapitulatif
+                        with st.expander("📋 Récapitulatif du compte créé"):
+                            st.write(f"**Nom d'utilisateur:** {username}")
+                            st.write(f"**Équipe:** {equipe}")
+                            st.write(f"**Fonction:** {fonction}")
+                            st.write(f"**Rôle:** {role}")
+                            st.write(f"**Profil de permissions:** {auto_permissions}")
+                        
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
+
+def update_user_permissions(user_id, permissions):
+    """Met à jour les permissions d'un utilisateur"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, username, role, equipe, fonction, couleur_preferee, created_at 
-                FROM users 
-                ORDER BY created_at DESC
-            """)
+                UPDATE users 
+                SET role = %s,
+                    can_add_articles = %s,
+                    can_view_stats = %s, 
+                    can_view_all_orders = %s
+                WHERE id = %s
+            """, (
+                permissions['role'],
+                permissions['can_add_articles'],
+                permissions['can_view_stats'], 
+                permissions['can_view_all_orders'],
+                user_id
+            ))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, username, role, equipe, fonction, couleur_preferee, created_at 
-                FROM users 
-                ORDER BY created_at DESC
-            """)
+                UPDATE users 
+                SET role = ?,
+                    can_add_articles = ?, 
+                    can_view_stats = ?, 
+                    can_view_all_orders = ?
+                WHERE id = ?
+            """, (
+                permissions['role'],
+                permissions['can_add_articles'],
+                permissions['can_view_stats'], 
+                permissions['can_view_all_orders'],
+                user_id
+            ))
         
-        users = cursor.fetchall()
+        conn.commit()
         conn.close()
+        return True
         
-        if users:
-            for user in users:
-                user_id, username, role, equipe, fonction, couleur, created_at = user
-                
-                with st.expander(f"👤 {username} ({role}) - {equipe or 'N/A'}", expanded=False):
-                    col1, col2, col3 = st.columns([2, 2, 1])
-                    
-                    with col1:
-                        st.write(f"**ID:** {user_id}")
-                        st.write(f"**Rôle:** {role}")
-                        st.write(f"**Équipe:** {equipe or 'Non définie'}")
-                        st.write(f"**Fonction:** {fonction or 'Non définie'}")
-                    
-                    with col2:
-                        st.write(f"**Couleur préférée:** {couleur or 'Non définie'}")
-                        st.write(f"**Créé le:** {created_at}")
-                        
-                        # Modifier le rôle
-                        new_role = st.selectbox(
-                            "Modifier le rôle:", 
-                            ["user", "admin"], 
-                            index=0 if role == "user" else 1,
-                            key=f"role_{user_id}"
-                        )
-                        
-                        if st.button(f"💾 Sauvegarder rôle", key=f"save_{user_id}"):
-                            if update_user_role(user_id, new_role):
-                                st.success("✅ Rôle mis à jour")
-                                st.rerun()
-                            else:
-                                st.error("❌ Erreur mise à jour")
-                    
-                    with col3:
-                        # Bouton de suppression (sauf pour admin)
-                        if username != "admin":
-                            if st.button(f"🗑️ Supprimer", key=f"delete_{user_id}", type="secondary"):
-                                if st.session_state.get(f"confirm_delete_{user_id}", False):
-                                    if delete_user(user_id):
-                                        st.success(f"✅ Utilisateur {username} supprimé")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Erreur suppression")
-                                else:
-                                    st.session_state[f"confirm_delete_{user_id}"] = True
-                                    st.warning("⚠️ Cliquez à nouveau pour confirmer la suppression")
-                        else:
-                            st.info("🔒 Admin protégé")
-        else:
-            st.info("Aucun utilisateur trouvé")
-            
     except Exception as e:
-        st.error(f"Erreur chargement utilisateurs: {e}")
-
+        st.error(f"Erreur: {e}")
+        return False
 def update_user_role(user_id, new_role):
     """Met à jour le rôle d'un utilisateur"""
     try:
@@ -2726,11 +2867,9 @@ def user_can_view_all_orders():
     """Vérifie si l'utilisateur peut voir toutes les commandes"""
     user_info = st.session_state.get('current_user', {})
     
-    # Admin peut toujours voir
     if user_info.get('role') == 'admin':
         return True
     
-    # Vérifier la permission spécifique
     username = user_info.get('username')
     if not username:
         return False
@@ -2743,11 +2882,10 @@ def user_can_view_all_orders():
         
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT can_view_all_orders 
-            FROM users 
-            WHERE username = ?
-        """, (username,))
+        if USE_POSTGRESQL:
+            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = %s", (username,))
+        else:
+            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = ?", (username,))
         
         result = cursor.fetchone()
         conn.close()
@@ -3100,6 +3238,241 @@ def show_reset_password():
             del st.session_state.captcha_answer
         st.session_state.page = 'login'
         st.rerun()
+
+def assign_permissions_by_function(username, fonction):
+    """Attribue automatiquement les permissions selon la fonction"""
+    try:
+        # Définir les permissions selon la fonction
+        if fonction in ["CONTREMAÎTRE", "RTZ", "GESTIONNAIRE"]:
+            # Postes à responsabilité - tous les accès
+            permissions = {
+                'role': 'user',
+                'can_add_articles': True,
+                'can_view_stats': True,
+                'can_view_all_orders': True
+            }
+        elif fonction in ["CHEF D'ÉQUIPE", "RESPONSABLE SÉCURITÉ"]:
+            # Encadrement - accès aux stats uniquement
+            permissions = {
+                'role': 'user',
+                'can_add_articles': False,
+                'can_view_stats': True,
+                'can_view_all_orders': False
+            }
+        else:
+            # Utilisateur standard - accès de base
+            permissions = {
+                'role': 'user',
+                'can_add_articles': False,
+                'can_view_stats': False,
+                'can_view_all_orders': False
+            }
+        
+        # Récupérer l'ID de l'utilisateur
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        
+        result = cursor.fetchone()
+        if result:
+            user_id = result[0]
+            conn.close()
+            
+            # Appliquer les permissions
+            update_user_permissions(user_id, permissions)
+            
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur attribution permissions: {e}")
+        return False
+
+def show_catalogue():
+    """Affiche le catalogue des articles"""
+    st.markdown("### 🛡️ Catalogue FLUX/PARA")
+    
+    budget_used = calculate_cart_total()
+    budget_remaining = MAX_CART_AMOUNT - budget_used
+    
+    if budget_remaining > 0:
+        st.success(f"💰 Budget disponible: {budget_remaining:.2f}€ (secteur FLUX/PARA)")
+    else:
+        st.error(f"🚨 Budget FLUX/PARA dépassé de {abs(budget_remaining):.2f}€ !")
+    
+    with st.sidebar:
+        show_cart_sidebar()
+    
+    categories = articles_df['Description'].unique()
+    
+    if not st.session_state.get('selected_category'):
+        st.markdown("### 📋 Sélectionnez une catégorie")
+        
+        cols = st.columns(3)
+        for i, category in enumerate(categories):
+            with cols[i % 3]:
+                emoji = get_category_emoji(category)
+                if st.button(f"{emoji} {category}", key=f"cat_{category}", use_container_width=True):
+                    st.session_state.selected_category = category
+                    st.rerun()
+    else:
+        category = st.session_state.selected_category
+        emoji = get_category_emoji(category)
+        
+        if st.button("← Retour aux catégories"):
+            st.session_state.selected_category = None
+            st.rerun()
+        
+        st.markdown(f"#### {emoji} {category}")
+        
+        articles_category = articles_df[articles_df['Description'] == category]
+        
+        # Regrouper les articles par nom de base
+        articles_groupes = {}
+        for idx, article in articles_category.iterrows():
+            nom_complet = article['Nom']
+            
+            if 'taille' in nom_complet.lower():
+                taille_match = re.search(r'taille\s+([a-zA-Z0-9?]+)', nom_complet, re.IGNORECASE)
+                if taille_match:
+                    taille = taille_match.group(1)
+                    nom_base = re.sub(r'\s+taille\s+[a-zA-Z0-9?]+', '', nom_complet, flags=re.IGNORECASE).strip()
+                else:
+                    nom_base = nom_complet
+                    taille = "?"
+            else:
+                nom_base = nom_complet
+                taille = None
+            
+            if nom_base not in articles_groupes:
+                articles_groupes[nom_base] = {
+                    'prix': float(article['Prix']),
+                    'tailles': {},
+                    'article_simple': None
+                }
+            
+            if taille:
+                articles_groupes[nom_base]['tailles'][taille] = {'article': article, 'index': idx}
+            else:
+                articles_groupes[nom_base]['article_simple'] = {'article': article, 'index': idx}
+        
+        # Afficher les groupes
+        for nom_base, infos in articles_groupes.items():
+            with st.container():
+                st.markdown(f"### {nom_base}")
+                st.markdown(f"💰 **{infos['prix']:.2f}€**")
+                
+                if infos['tailles']:
+                    st.markdown("**Tailles disponibles:**")
+                    
+                    def sort_tailles_intelligent(item):
+                        taille = item[0]
+                        tailles_lettres = {'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5, 'XXL': 6, 'XXXL': 7}
+                        
+                        if taille in tailles_lettres:
+                            return (0, tailles_lettres[taille])
+                        
+                        try:
+                            return (1, int(taille))
+                        except (ValueError, TypeError):
+                            return (2, taille)
+                    
+                    tailles_triees = sorted(infos['tailles'].items(), key=sort_tailles_intelligent)
+                    
+                    for i in range(0, len(tailles_triees), 6):
+                        cols = st.columns(6)
+                        for j, (taille, data) in enumerate(tailles_triees[i:i+6]):
+                            with cols[j]:
+                                if st.button(f"🛒 {taille}", key=f"taille_{data['index']}", use_container_width=True):
+                                    add_to_cart(data['article'], 1)
+                                    st.toast(f"✅ Taille {taille} ajoutée !", icon="✅")
+                                    st.rerun()
+                else:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        quantity = st.number_input("Quantité", min_value=1, max_value=50, value=1, key=f"qty_{infos['article_simple']['index']}")
+                    with col2:
+                        if st.button("➕ Ajouter", key=f"add_{infos['article_simple']['index']}", use_container_width=True):
+                            add_to_cart(infos['article_simple']['article'], quantity)
+                            st.rerun()
+                
+                st.divider()
+
+def show_orders_history():
+    """Affiche l'historique des commandes avec correction du décodage des articles"""
+    st.markdown("### 📋 Historique global - Administration")
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix, statut
+                FROM commandes 
+                ORDER BY date DESC
+            """)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix, statut
+                FROM commandes 
+                ORDER BY date DESC
+            """)
+        
+        orders = cursor.fetchall()
+        conn.close()
+        
+        if orders:
+            for order in orders:
+                order_id, date, contremaitre, equipe, articles_json, total_prix, statut = order
+                
+                with st.expander(f"🛒 Commande #{order_id} - {contremaitre} ({equipe}) - {total_prix}€", expanded=False):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.write(f"📅 **Date:** {date}")
+                        st.write(f"👤 **Contremaître:** {contremaitre}")
+                        st.write(f"👷‍♂️ **Équipe:** {equipe}")
+                        st.write(f"💰 **Total:** {total_prix}€")
+                        st.write(f"📋 **Statut:** {statut}")
+                        
+                        st.markdown("#### 📦 Articles commandés:")
+                        
+                        # AFFICHAGE SIMPLE DES NOMS D'ARTICLES
+                        try:
+                            articles_list = json.loads(articles_json)
+                            st.write(f"**Nombre d'articles:** {len(articles_list)}")
+                            
+                            for article in articles_list:
+                                if isinstance(article, dict) and 'Nom' in article:
+                                    st.write(f"• {article['Nom']}")
+                                elif isinstance(article, dict):
+                                    # Si pas de 'Nom', essayer d'autres clés
+                                    nom = article.get('nom', article.get('name', 'Article sans nom'))
+                                    st.write(f"• {nom}")
+                                else:
+                                    st.write(f"• {str(article)}")
+                                
+                        except Exception as e:
+                            st.write(f"**Erreur affichage articles:** {e}")
+                    
+                    with col2:
+                        if st.button(f"🗑️ Supprimer", key=f"delete_order_{order_id}"):
+                            if delete_commande(order_id):
+                                st.success("✅ Commande supprimée")
+                                st.rerun()
+                            else:
+                                st.error("❌ Erreur suppression")
+        else:
+            st.info("Aucune commande dans l'historique")
+            
+    except Exception as e:
+        st.error(f"Erreur chargement historique: {e}")
 
 if __name__ == "__main__":
     main()
