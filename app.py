@@ -34,6 +34,89 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# FORCER LE MODE CLAIR ☀️
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #ffffff;
+        color: #262626;
+    }
+    
+    .stSidebar {
+        background-color: #f8f9fa;
+        border-right: 1px solid #e9ecef;
+    }
+    
+    .stButton > button {
+        background-color: #1f77b4;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .stButton > button:hover {
+        background-color: #0d5aa7;
+        color: white;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+    
+    .stExpander {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+    }
+    
+    .stSelectbox > div > div {
+        background-color: #ffffff;
+        border: 1px solid #ced4da;
+    }
+    
+    .stTextInput > div > div > input {
+        background-color: #ffffff;
+        border: 1px solid #ced4da;
+        color: #495057;
+    }
+    
+    /* RESPONSIVE MOBILE 📱 */
+    @media (max-width: 768px) {
+        .stButton > button {
+            font-size: 14px;
+            padding: 0.75rem;
+            margin: 0.25rem 0;
+        }
+        
+        .stColumns {
+            flex-direction: column;
+        }
+        
+        .stExpander {
+            margin: 0.25rem 0;
+        }
+        
+        .stSidebar {
+            min-width: 100% !important;
+        }
+    }
+    
+    /* Style pour les métriques */
+    .metric-container {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f77b4;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    
+    /* Messages d'erreur/succès plus visibles */
+    .stAlert {
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # === VARIABLES GLOBALES ===
 MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
 
@@ -177,60 +260,6 @@ def create_sample_articles():
     return pd.DataFrame(sample_data)
 
 articles_df = load_articles()
-
-# === CSS MODERNE ===
-st.markdown("""
-<style>
-:root {
-    --primary-color: #2563eb;
-    --primary-dark: #1d4ed8;
-    --secondary-color: #f8fafc;
-    --text-color: #1e293b;
-    --border-color: #e2e8f0;
-    --success-color: #10b981;
-    --error-color: #ef4444;
-    --border-radius: 0.5rem;
-    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
-}
-
-.stApp {
-    background-color: var(--secondary-color);
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-}
-
-.stButton > button {
-    background: var(--primary-color);
-    color: white;
-    border: none;
-    border-radius: var(--border-radius);
-    padding: 0.5rem 1rem;
-    font-weight: 500;
-    transition: all 0.2s;
-    box-shadow: var(--shadow);
-    width: 100%;
-}
-
-.stButton > button:hover {
-    background: var(--primary-dark);
-    transform: translateY(-1px);
-}
-
-/* Animation pour erreurs budget */
-@keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    25% { transform: translateX(-5px); }
-    75% { transform: translateX(5px); }
-}
-
-.budget-error {
-    animation: shake 0.5s ease-in-out;
-    border: 2px solid var(--error-color);
-    border-radius: var(--border-radius);
-    padding: 1rem;
-    background: #fef2f2;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # === FONCTIONS BASE DE DONNÉES ===
 def init_database():
@@ -2708,34 +2737,30 @@ def update_user_permissions(user_id, permissions):
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE users 
-                SET role = %s,
-                    can_add_articles = %s,
-                    can_view_stats = %s, 
-                    can_view_all_orders = %s
+                UPDATE users SET 
+                can_add_articles = %s,
+                can_view_stats = %s,
+                can_view_all_orders = %s
                 WHERE id = %s
             """, (
-                permissions['role'],
-                permissions['can_add_articles'],
-                permissions['can_view_stats'], 
-                permissions['can_view_all_orders'],
+                permissions.get('can_add_articles', False),
+                permissions.get('can_view_stats', False), 
+                permissions.get('can_view_all_orders', False),
                 user_id
             ))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE users 
-                SET role = ?,
-                    can_add_articles = ?, 
-                    can_view_stats = ?, 
-                    can_view_all_orders = ?
+                UPDATE users SET 
+                can_add_articles = ?,
+                can_view_stats = ?,
+                can_view_all_orders = ?
                 WHERE id = ?
             """, (
-                permissions['role'],
-                permissions['can_add_articles'],
-                permissions['can_view_stats'], 
-                permissions['can_view_all_orders'],
+                permissions.get('can_add_articles', False),
+                permissions.get('can_view_stats', False),
+                permissions.get('can_view_all_orders', False), 
                 user_id
             ))
         
@@ -2744,7 +2769,7 @@ def update_user_permissions(user_id, permissions):
         return True
         
     except Exception as e:
-        st.error(f"Erreur: {e}")
+        st.error(f"Erreur mise à jour permissions: {e}")
         return False
 def update_user_role(user_id, new_role):
     """Met à jour le rôle d'un utilisateur"""
