@@ -2314,11 +2314,12 @@ def show_admin_articles():
         st.markdown("#### 🔍 Recherche dans le catalogue")
         query = st.text_input("Référence ou nom…")
 
+        ref_col = get_ref_col(articles_df)
         df_affiche = articles_df
         if query:
             df_affiche = articles_df[
                 articles_df["Nom"].str.contains(query, case=False, na=False)
-                | articles_df["Référence"].astype(str).str.contains(query)
+                | articles_df[ref_col].astype(str).str.contains(query)
             ]
 
         st.dataframe(df_affiche, use_container_width=True)
@@ -2331,16 +2332,16 @@ def show_admin_articles():
                 st.info("Aucun article correspondant.")
             else:
                 label_options = (
-                    df_affiche["Référence"].astype(str) + " – " + df_affiche["Nom"]
+                    df_affiche[ref_col].astype(str) + " – " + df_affiche["Nom"]
                 ).tolist()
                 choix = st.selectbox("Choisissez l'article :", label_options)
                 ref_supp = choix.split(" – ")[0]        # on isole la référence
 
                 if st.button("🗑️ Supprimer", type="secondary"):
-                    ok, msg = delete_article(ref_supp)
+                    ok, msg = delete_article(ref_supp, ref_col)
                     if ok:
                         st.success(msg)
-                        st.experimental_rerun()         # rafraîchir la page
+                        st.rerun()         # relance l'app sans perdre la session
                     else:
                         st.error(msg)
         else:
@@ -2381,7 +2382,7 @@ def show_admin_articles():
                     st.success(f"✅ {message}")
                     # 🔄 Ré-actualiser uniquement les données en cache
                     st.cache_data.clear()     # invalide les @st.cache_data
-                    st.experimental_rerun()   # relance l'app sans perdre la session
+                    st.rerun()   # relance l'app sans perdre la session
                 else:
                     st.error(f"❌ {message}")
             else:
@@ -3835,13 +3836,14 @@ def ensure_users_table():
     conn.close()
 
 # --- GESTION DES ARTICLES : SUPPRESSION ---------------------------------
-def delete_article(reference: str) -> tuple[bool, str]:
+def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, str]:
     """Supprime un article (référence) du fichier CSV puis invalide le cache."""
     try:
         df = pd.read_csv("articles.csv")
-        if reference not in df["Référence"].astype(str).values:
+        ref_col = ref_col or get_ref_col(df)
+        if reference not in df[ref_col].astype(str).values:
             return False, "Référence introuvable"
-        df = df[df["Référence"].astype(str) != str(reference)]
+        df = df[df[ref_col].astype(str) != str(reference)]
         df.to_csv("articles.csv", index=False)
         st.cache_data.clear()
         return True, "✅ Article supprimé avec succès"
@@ -3943,6 +3945,18 @@ def build_sidebar():
         st.sidebar.page_link("stats", label="📊 Statistiques")
     if user and user["role"] == "admin":
         st.sidebar.page_link("users", label="👤 Utilisateurs")
+
+# ------------------------------------------------------------------
+# Quelle est la colonne "référence" dans le CSV ?
+# ------------------------------------------------------------------
+def get_ref_col(df: pd.DataFrame) -> str:
+    """Retourne le nom de la colonne Référence réellement présente."""
+    possibles = ["Référence", "N° Référence", "Reference", "Ref"]
+    for col in possibles:
+        if col in df.columns:
+            return col
+    # dernier recours : on prend la première colonne
+    return df.columns[0]
 
 if __name__ == "__main__":
     main()
