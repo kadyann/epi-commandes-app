@@ -18,6 +18,9 @@ import psycopg2
 import base64
 import re
 import hashlib
+import csv          # 📥 nécessaire pour écrire dans le catalogue
+import ast
+from typing import Tuple, Optional
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -131,57 +134,47 @@ else:
 # === CHARGEMENT DES DONNÉES ===
 @st.cache_data(ttl=60)
 def load_articles():
-    """Charge les articles depuis le fichier CSV avec gestion d'erreurs robuste"""
+    """Charge les articles depuis le CSV - AVEC VALIDATION DES COLONNES"""
     try:
-        # Essayer plusieurs méthodes de lecture
-        try:
-            # Méthode 1: Lecture standard avec gestion d'erreurs
-            df = pd.read_csv('articles.csv', on_bad_lines='skip', encoding='utf-8')
-        except:
-            try:
-                # Méthode 2: Avec séparateur point-virgule
-                df = pd.read_csv('articles.csv', sep=';', on_bad_lines='skip', encoding='utf-8')
-            except:
-                try:
-                    # Méthode 3: Avec engine python (plus lent mais plus robuste)
-                    df = pd.read_csv('articles.csv', engine='python', on_bad_lines='skip', encoding='utf-8')
-                except:
-                    # Méthode 4: Lecture ligne par ligne pour identifier le problème
-                    st.warning("⚠️ Problème détecté dans le CSV, nettoyage en cours...")
-                    df = read_csv_safe('articles.csv')
+        # Essayer UTF-8 d'abord
+        df = pd.read_csv('articles.csv', encoding='utf-8')
+        print(f"📋 CSV lu avec succès : {len(df)} articles")
         
-        # Vérifier que les colonnes essentielles existent
-        required_columns = ['Nom', 'Prix', 'Description']
+        # VALIDATION ET NETTOYAGE DES COLONNES ✅
+        required_columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
         
-        # Si les colonnes n'existent pas, essayer de les mapper
-        if 'Nom' not in df.columns:
-            # Mapper les colonnes du CSV actuel
-            column_mapping = {
-                'N° Référence': 'Référence',
-                'Nom': 'Nom', 
-                'Description': 'Description',
-                'Prix': 'Prix',
-                'Unitée': 'Unité'
-            }
-            df = df.rename(columns=column_mapping)
+        # Vérifier que toutes les colonnes existent
+        if not all(col in df.columns for col in required_columns):
+            st.error(f"❌ Colonnes manquantes dans le CSV. Trouvées: {list(df.columns)}")
+            return create_sample_articles()
         
-        # Nettoyer les données
-        df = df.dropna(subset=['Nom', 'Prix'])
-        df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
+        # Nettoyer la colonne Prix - supprimer les lignes avec des prix non numériques
         df = df.dropna(subset=['Prix'])
+        df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
+        df = df.dropna(subset=['Prix'])  # Supprimer les lignes où Prix ne peut pas être converti
         
-        # Ajouter la colonne Description si elle manque
-        if 'Description' not in df.columns:
-            df['Description'] = df['Nom']
+        # Supprimer les lignes avec des données corrompues
+        df = df[df['Prix'] > 0]  # Prix doit être positif
+        df = df[df['Nom'].str.len() > 2]  # Nom doit avoir au moins 3 caractères
         
-        st.success(f"✅ {len(df)} articles chargés avec succès")
+        print(f"✅ CSV nettoyé : {len(df)} articles valides")
         return df
         
-    except Exception as e:
-        st.error(f"❌ Erreur lecture CSV: {e}")
-        st.info("🔄 Utilisation d'articles d'exemple...")
+    except FileNotFoundError:
+        st.warning("📁 Fichier articles.csv non trouvé, création d'articles d'exemple")
         return create_sample_articles()
-
+    except UnicodeDecodeError:
+        try:
+            df = pd.read_csv('articles.csv', encoding='latin-1')
+            print(f"📋 CSV lu (latin-1) : {len(df)} articles")
+            # Même validation ici
+            return df
+        except Exception as e:
+            st.error(f"❌ Erreur lecture : {e}")
+            return create_sample_articles()
+    except Exception as e:
+        st.error(f"❌ Erreur inattendue : {e}")
+        return create_sample_articles()
 
 def read_csv_safe(filename):
     """Lecture sécurisée du CSV ligne par ligne"""
@@ -522,42 +515,50 @@ def init_users_db():
         st.error(f"Erreur initialisation admin: {e}")
 
 def authenticate_user(username, password):
-    """Authentifie un utilisateur"""
-    try:
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, username, role, equipe, fonction, couleur_preferee 
-                FROM users WHERE username = %s AND password = %s
-            """, (username, password_hash))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, username, role, equipe, fonction, couleur_preferee 
-                FROM users WHERE username = ? AND password = ?
-            """, (username, password_hash))
-        
-        user = cursor.fetchone()
-        conn.close()
-        
-        if user:
-            return {
-                'id': user[0],
-                'username': user[1],
-                'role': user[2],
-                'equipe': user[3],
-                'fonction': user[4],
-                'couleur_preferee': user[5]
-            }
+    """
+    Renvoie le dict utilisateur si les identifiants sont valides, sinon None
+    """
+    ensure_users_table()
+
+    conn   = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, username, password, password_hash, role, equipe, fonction,
+               can_add_articles, can_view_stats, can_view_all_orders
+        FROM   users
+        WHERE  username = ?
+    """, (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
         return None
-        
-    except Exception as e:
-        st.error(f"Erreur authentification: {e}")
+
+    (uid, user, pwd_clear, pwd_hash, role,
+     equipe, fonction, c_add, c_stats, c_all) = row
+
+    # 1) essayer le hash sécurisé
+    if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
+        pass_ok = True
+    # 2) sinon, compatibilité ancien schéma (mot de passe stocké en clair)
+    elif pwd_clear and password == pwd_clear:
+        pass_ok = True
+    else:
+        pass_ok = False
+
+    if not pass_ok:
         return None
+
+    return {
+        "id": uid,
+        "username": user,
+        "role": role,
+        "equipe": equipe,
+        "fonction": fonction,
+        "can_add_articles": bool(c_add),
+        "can_view_stats":   bool(c_stats),
+        "can_view_all_orders": bool(c_all)
+    }
 
 def add_user(username, password, role='user', equipe='', fonction='', email=''):
     """Ajoute un nouvel utilisateur"""
@@ -822,32 +823,12 @@ def show_login():
             if username and password:
                 user = authenticate_user(username, password)
                 if user:
-                    st.session_state.current_user = user
                     st.session_state.authenticated = True
-                    st.session_state.page = 'catalogue'
-                    
-                    # Messages de bienvenue marrants
-                    messages_bienvenue = [
-                        f"🎉 Salut {user['username']} ! Prêt à faire du shopping sécurisé ?",
-                        f"🚀 {user['username']} dans la place ! L'aventure commence !",
-                        f"⭐ Bienvenue {user['username']} ! Votre équipe vous attend !",
-                        f"🎯 {user['username']} connecté ! Mission équipement en cours !",
-                        f"🛡️ {user['username']} ! Votre arsenal vous attend !"
-                    ]
-                    
-                    st.success(random.choice(messages_bienvenue))
-                    time.sleep(1)
+                    st.session_state.current_user  = user
+                    st.session_state.page          = "catalogue"   # ou page d'accueil
                     st.rerun()
                 else:
-                    # Messages d'erreur marrants
-                    messages_erreur = [
-                        "🤔 Hmm... Ces identifiants ne me disent rien !",
-                        "🕵️‍♂️ Identifiants introuvables ! Êtes-vous un espion ?",
-                        "🚫 Accès refusé ! Mot de passe incorrect, agent !",
-                        "❌ Erreur 404 : Utilisateur non trouvé dans nos fichiers !",
-                        "🔒 Mauvaise combinaison ! Réessayez, agent secret !"
-                    ]
-                    st.error(random.choice(messages_erreur))
+                    st.error("Hmm… Ces identifiants ne me disent rien !")
             else:
                 st.error("❌ Veuillez remplir tous les champs")
         
@@ -2250,13 +2231,21 @@ def main():
         elif page == "historique":
             show_orders_history()  # Utilisez celle-ci au lieu de show_historique()
         elif page == "stats":
-            show_stats()
+            if has_perm(get_current_user(), PERM_VIEW_STATS):
+                show_stats_page()
+            else:
+                st.warning("⛔ Accès réservé.")
         elif page == "mes_commandes":
             show_mes_commandes()
         elif page == "admin_articles":
             show_admin_articles()
         elif page == "admin_users":
-            show_admin_users()
+            show_admin_page()  # (au lieu de show_admin_users)
+        elif page == "👥 Utilisateurs":
+            if get_current_user() and get_current_user()["role"] == "admin":
+                show_user_admin_page()
+            else:
+                st.warning("⛔ Réservé à l'administrateur.")
         else:
             show_catalogue()
 
@@ -2309,168 +2298,136 @@ def show_main_app():
         st.write(f"**Couleur préférée:** {user_info['couleur_preferee']}")
 
 def show_admin_articles():
-    """Page de gestion des articles - ADMIN et contremaîtres autorisés"""
-    user_info = st.session_state.get('current_user', {})
+    """Page de gestion des articles pour l'administration"""
+    # AJOUTER CETTE LIGNE AU DÉBUT ✅
+    user_info = st.session_state.get('user', {})
     
-    # Vérifier les droits
-    if not user_can_add_articles():
-        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation d'ajouter des articles")
-        st.info("Contactez un administrateur pour obtenir cette permission.")
-        return
+    st.markdown("### 🛠️ Gestion des articles - Administration")
     
-    # Titre différent selon le rôle
-    if user_info.get('role') == 'admin':
-        st.markdown("### 🛠️ Gestion des articles - Administration")
-    else:
-        st.markdown("### ➕ Ajouter des articles")
+    tabs = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📤 Import CSV"])
     
-    # Onglets selon les permissions
-    if user_info.get('role') == 'admin':
-        # Admin : tous les onglets
-        tab1, tab2, tab3 = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📁 Import CSV"])
-    else:
-        # Contremaître : seulement ajout individuel
-        tab1, tab2 = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article"])
-        tab3 = None
-    
-    with tab1:
+    with tabs[0]:   # 📑 Catalogue actuel
         # Afficher le catalogue actuel (lecture seule pour contremaîtres)
         st.markdown("#### 📋 Articles actuels")
         
-        if not articles_df.empty:
-            # Statistiques rapides
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("📦 Total articles", len(articles_df))
-            with col2:
-                if 'Prix' in articles_df.columns:
-                    prix_moyen = articles_df['Prix'].astype(float).mean()
-                    st.metric("💰 Prix moyen", f"{prix_moyen:.2f}€")
-            with col3:
-                if 'Catégorie' in articles_df.columns:
-                    nb_categories = articles_df['Catégorie'].nunique()
-                    st.metric("🏷️ Catégories", nb_categories)
-            
-            # Tableau
-            st.markdown("**Catalogue complet:**")
-            st.dataframe(articles_df, use_container_width=True)
-            
-            # Bouton téléchargement seulement pour admin
-            if user_info.get('role') == 'admin':
-                csv_data = articles_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Télécharger CSV actuel",
-                    data=csv_data,
-                    file_name=f"articles_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv"
-                )
+        # -----------------------  RECHERCHE  ----------------------------
+        st.markdown("#### 🔍 Recherche dans le catalogue")
+        query = st.text_input("Référence ou nom…")
+
+        df_affiche = articles_df
+        if query:
+            df_affiche = articles_df[
+                articles_df["Nom"].str.contains(query, case=False, na=False)
+                | articles_df["Référence"].astype(str).str.contains(query)
+            ]
+
+        st.dataframe(df_affiche, use_container_width=True)
+
+        # --------------------  SUPPRESSION (admin/tech)  -----------------
+        if user_info.get("role") == "admin" or user_info.get("fonction", "").lower() == "technicien":
+            st.markdown("#### 🗑️ Supprimer un article")
+
+            if df_affiche.empty:
+                st.info("Aucun article correspondant.")
+            else:
+                label_options = (
+                    df_affiche["Référence"].astype(str) + " – " + df_affiche["Nom"]
+                ).tolist()
+                choix = st.selectbox("Choisissez l'article :", label_options)
+                ref_supp = choix.split(" – ")[0]        # on isole la référence
+
+                if st.button("🗑️ Supprimer", type="secondary"):
+                    ok, msg = delete_article(ref_supp)
+                    if ok:
+                        st.success(msg)
+                        st.experimental_rerun()         # rafraîchir la page
+                    else:
+                        st.error(msg)
         else:
-            st.warning("⚠️ Aucun article trouvé dans le catalogue")
+            st.info("🔒 Suppression réservée aux administrateurs et techniciens.")
     
-    with tab2:
-        # Formulaire d'ajout d'article (accessible aux deux)
+    with tabs[1]:
         st.markdown("#### ➕ Ajouter un nouvel article")
         
-        # Message pour contremaîtres
-        if user_info.get('role') != 'admin':
-            st.info("🛠️ Vous avez l'autorisation d'ajouter des articles au catalogue.")
+        col1, col2 = st.columns(2)
         
-        # ... reste du code du formulaire identique ...
-        with st.form("add_article_form"):
-            col1, col2 = st.columns(2)
+        with col1:
+            reference = st.text_input("📦 Référence*", placeholder="Ex: 40953")
+            nom = st.text_input("📝 Nom de l'article*", placeholder="Ex: Chaussure de sécurité")
+            prix = st.number_input("💰 Prix (€)*", min_value=0.0, step=0.01, format="%.2f")
+        
+        with col2:
+            # Sélection de catégorie existante ou création nouvelle
+            categories_existantes = articles_df['Description'].unique().tolist() if not articles_df.empty else []
             
-            with col1:
-                # Récupérer la prochaine référence disponible
-                if not articles_df.empty and 'Référence' in articles_df.columns:
-                    try:
-                        max_ref = articles_df['Référence'].astype(int).max()
-                        next_ref = max_ref + 1
-                    except:
-                        next_ref = 50000
-                else:
-                    next_ref = 40000
-                
-                reference = st.number_input("🔢 Référence", value=next_ref, min_value=1)
-                nom = st.text_input("📝 Nom de l'article", placeholder="Ex: Chaussure de sécurité JALAS Taille 42")
-                prix = st.number_input("💰 Prix (€)", min_value=0.0, step=0.01, format="%.2f")
+            create_new_category = st.checkbox("📝 Créer une nouvelle catégorie")
             
-            with col2:
-                # Récupérer les catégories existantes
-                if not articles_df.empty and 'Catégorie' in articles_df.columns:
-                    categories_existantes = articles_df['Catégorie'].dropna().unique().tolist()
-                else:
-                    categories_existantes = []
-                
-                # Option pour nouvelle catégorie ou existante
-                nouvelle_categorie = st.checkbox("Créer une nouvelle catégorie")
-                
-                if nouvelle_categorie:
-                    categorie = st.text_input("🏷️ Nouvelle catégorie", placeholder="Ex: Chaussures de sécurité")
-                else:
-                    if categories_existantes:
-                        categorie = st.selectbox("🏷️ Catégorie", categories_existantes)
-                    else:
-                        categorie = st.text_input("🏷️ Catégorie", placeholder="Ex: Chaussures de sécurité")
-                
-                description = st.text_area("📄 Description (optionnel)", placeholder="Description détaillée de l'article")
+            if create_new_category:
+                nouvelle_categorie = st.text_input("🆕 Nouvelle catégorie", placeholder="Ex: Chaussures de sécurité")
+                description = nouvelle_categorie
+            else:
+                description = st.selectbox("📝 Catégorie", ["Sélectionnez..."] + categories_existantes)
+                if description == "Sélectionnez...":
+                    description = st.text_input("📝 Description (optionnel)", placeholder="Ex: Chaussures")
             
-            submitted = st.form_submit_button("✅ Ajouter l'article", use_container_width=True)
-            
-            if submitted:
-                if nom and prix > 0:
-                    # Ajouter l'article au CSV
-                    nouvel_article = {
-                        'Référence': reference,
-                        'Nom': nom,
-                        'Prix': prix,
-                        'Catégorie': categorie,
-                        'Description': description
-                    }
-                    
-                    if add_article_to_csv(nouvel_article):
-                        st.success(f"✅ Article '{nom}' ajouté avec succès !")
-                        st.balloons()
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ Erreur lors de l'ajout de l'article")
+            unite = st.text_input("📏 Unité", value="Par unité", placeholder="Ex: Par paire, Par veste...")
+        
+        if st.button("📝 Ajouter l'article", use_container_width=True):
+            if all([reference, nom, prix > 0]):
+                # CORRECTION ICI ✅
+                success, message = add_article_to_csv(reference, nom, description or "", prix, unite or "Par unité")
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    # 🔄 Ré-actualiser uniquement les données en cache
+                    st.cache_data.clear()     # invalide les @st.cache_data
+                    st.experimental_rerun()   # relance l'app sans perdre la session
                 else:
-                    st.error("❌ Veuillez remplir tous les champs obligatoires")
+                    st.error(f"❌ {message}")
+            else:
+                st.error("❌ Veuillez remplir au minimum la référence, le nom et le prix")
     
-    # Onglet import seulement pour admin
-    if tab3 and user_info.get('role') == 'admin':
-        with tab3:
-            # ... code import CSV identique ...
-            pass
+    # Onglet import seulement pour admin - CORRIGER CETTE LIGNE AUSSI
+    with tabs[2]:
+        # Import CSV pour admin seulement
+        if user_info.get('role') == 'admin':
+            st.markdown("#### 📤 Import CSV")
+            uploaded_file = st.file_uploader("Choisir un fichier CSV", type=['csv'])
+            if uploaded_file is not None:
+                # Code d'import...
+                pass
+        else:
+            st.info("🔒 Fonctionnalité réservée aux administrateurs")
 
-def add_article_to_csv(nouvel_article):
-    """Ajoute un article au fichier CSV"""
+def add_article_to_csv(reference: str,
+                       nom: str,
+                       description: str,
+                       prix: str,
+                       unite: str,
+                       categorie: str = "Autre") -> tuple[bool, str]:
+    """
+    Ajoute une ligne au fichier catalogue (CSV séparateur ';').
+    L'appel courant de l'interface transmet 5 arguments ; la catégorie est
+    optionnelle et positionnée en dernier.
+    Retourne (success, message).
+    """
     try:
-        global articles_df
-        
-        # Charger le CSV actuel
-        try:
-            df_actuel = pd.read_csv('articles.csv')
-        except FileNotFoundError:
-            # Créer un nouveau DataFrame si le fichier n'existe pas
-            df_actuel = pd.DataFrame(columns=['Référence', 'Nom', 'Prix', 'Catégorie', 'Description'])
-        
-        # Ajouter le nouvel article
-        nouveau_df = pd.concat([df_actuel, pd.DataFrame([nouvel_article])], ignore_index=True)
-        
-        # Sauvegarder
-        nouveau_df.to_csv('articles.csv', index=False)
-        
-        # Recharger le cache
-        st.cache_data.clear()
-        articles_df = load_articles()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur ajout article: {e}")
-        return False
+        file_path = "catalogue.csv"
+        header    = ['reference', 'nom', 'description', 'prix', 'unite', 'categorie']
 
+        # Création du fichier s'il n'existe pas encore
+        file_exists = os.path.isfile(file_path)
+        with open(file_path, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, delimiter=';')
+            if not file_exists:
+                writer.writerow(header)
+
+            writer.writerow([reference, nom, description, prix, unite, categorie])
+
+        return True, "✅ Article ajouté au catalogue"
+
+    except Exception as e:
+        return False, f"❌ Erreur ajout article : {e}"
 
 def import_articles_from_csv(new_articles_df):
     """Importe plusieurs articles depuis un DataFrame"""
@@ -2503,569 +2460,156 @@ def import_articles_from_csv(new_articles_df):
         return False
 
 def show_admin_users():
-    """Interface d'administration des utilisateurs avec gestion des permissions"""
-    st.markdown("### 👥 Gestion des utilisateurs - Administration")
+    """Page admin avec création ET suppression d'utilisateurs"""
+    st.markdown("# 👥 Gestion des utilisateurs - Administration")
     
-    tab1, tab2 = st.tabs(["👤 Utilisateurs existants", "➕ Ajouter utilisateur"])
+    # Deux colonnes : Créer | Supprimer
+    col1, col2 = st.columns(2)
     
-    with tab1:
-        st.markdown("#### 📋 Liste des utilisateurs et permissions")
+    with col1:
+        st.markdown("### ➕ Créer un nouvel utilisateur")
+        # ... ton code existant pour créer des utilisateurs ...
+    
+    with col2:
+        st.markdown("### 🗑️ Supprimer un utilisateur")
         
-        try:
-            if USE_POSTGRESQL:
-                conn = psycopg2.connect(DATABASE_URL)
-            else:
-                conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
+        # Liste déroulante des utilisateurs
+        users = get_all_users()
+        if users:
+            user_options = {f"{user[1]} ({user[3]})": user[0] for user in users if user[1] != 'admin'}
             
-            cursor.execute("""
-                SELECT id, username, role, equipe, fonction, couleur_preferee
-                FROM users 
-                ORDER BY role DESC, username ASC
-            """)
-            
-            users = cursor.fetchall()
-            conn.close()
-            
-            if users:
-                for user in users:
-                    user_id, username, role, equipe, fonction, couleur = user
-                    
-                    role_emoji = "👑" if role == "admin" else "👤"
-                    
-                    with st.expander(f"{role_emoji} {username} ({role}) - {equipe or 'N/A'}"):
-                        col1, col2, col3 = st.columns([2, 2, 1])
-                        
-                        with col1:
-                            st.write(f"**Équipe:** {equipe or 'Non définie'}")
-                            st.write(f"**Fonction:** {fonction or 'Non définie'}")
-                            
-                            new_role = st.selectbox(
-                                "Rôle:", 
-                                ["user", "admin"], 
-                                index=0 if role == "user" else 1,
-                                key=f"role_{user_id}"
-                            )
-                        
-                        with col2:
-                            st.markdown("**🔐 Permissions individuelles:**")
-                            
-                            # Récupérer les permissions actuelles
-                            try:
-                                if USE_POSTGRESQL:
-                                    conn = psycopg2.connect(DATABASE_URL)
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        SELECT can_add_articles, can_view_stats, can_view_all_orders 
-                                        FROM users WHERE id = %s
-                                    """, (user_id,))
-                                else:
-                                    conn = sqlite3.connect(DATABASE_PATH)
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        SELECT can_add_articles, can_view_stats, can_view_all_orders 
-                                        FROM users WHERE id = ?
-                                    """, (user_id,))
-                                
-                                result = cursor.fetchone()
-                                conn.close()
-                                
-                                if result:
-                                    current_add_articles, current_view_stats, current_view_all = result
-                                else:
-                                    current_add_articles = current_view_stats = current_view_all = False
-                                
-                            except:
-                                current_add_articles = current_view_stats = current_view_all = False
-                            
-                            # Checkboxes pour chaque permission
-                            add_articles = st.checkbox(
-                                "📝 Peut ajouter des articles", 
-                                value=bool(current_add_articles),
-                                key=f"add_articles_{user_id}"
-                            )
-                            
-                            view_stats = st.checkbox(
-                                "📊 Peut voir les statistiques", 
-                                value=bool(current_view_stats),
-                                key=f"view_stats_{user_id}"
-                            )
-                            
-                            view_all_orders = st.checkbox(
-                                "👀 Peut voir toutes les commandes", 
-                                value=bool(current_view_all),
-                                key=f"view_all_{user_id}"
-                            )
-                            
-                            # Bouton pour appliquer les changements
-                            if st.button(f"💾 Sauvegarder permissions", key=f"save_perms_{user_id}"):
-                                permissions = {
-                                    'role': new_role,
-                                    'can_add_articles': add_articles,
-                                    'can_view_stats': view_stats,
-                                    'can_view_all_orders': view_all_orders
-                                }
-                                
-                                if update_user_permissions(user_id, permissions):
-                                    st.success("✅ Permissions mises à jour !")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Erreur mise à jour")
-                            
-                            # Boutons d'actions rapides en dessous
-                            st.markdown("**⚡ Actions rapides:**")
-                            
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                if st.button(f"🎖️ Chef", key=f"make_chief_{user_id}", help="Tous les accès"):
-                                    permissions = {
-                                        'role': 'user',
-                                        'can_add_articles': True,
-                                        'can_view_stats': True,
-                                        'can_view_all_orders': True
-                                    }
-                                    if update_user_permissions(user_id, permissions):
-                                        st.success("✅ Promu chef")
-                                        st.rerun()
-                            
-                            with col_b:
-                                if st.button(f"🚫 Aucun", key=f"revoke_{user_id}", help="Révoquer tous"):
-                                    permissions = {
-                                        'role': 'user',
-                                        'can_add_articles': False,
-                                        'can_view_stats': False,
-                                        'can_view_all_orders': False
-                                    }
-                                    if update_user_permissions(user_id, permissions):
-                                        st.success("✅ Accès révoqués")
-                                        st.rerun()
-            else:
-                st.info("Aucun utilisateur trouvé")
+            if user_options:
+                selected_user = st.selectbox("Choisir un utilisateur à supprimer:", 
+                                           options=list(user_options.keys()))
                 
-        except Exception as e:
-            st.error(f"Erreur: {e}")
-    
-    with tab2:
-        st.markdown("#### ➕ Créer un nouvel utilisateur")
-        
-        with st.form("create_user_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                username = st.text_input("👤 Nom d'utilisateur*")
-                password = st.text_input("🔒 Mot de passe*", type="password", help="Minimum 6 caractères")
-                equipe = st.selectbox("👷‍♂️ Équipe*", 
-                    ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"])
-            
-            with col2:
-                # NOUVEAU: Menu déroulant avec rôles prédéfinis
-                fonctions_predefinies = [
-                    "CONTREMAÎTRE", 
-                    "RTZ", 
-                    "GESTIONNAIRE",
-                    "OPÉRATEUR",
-                    "TECHNICIEN",
-                    "RESPONSABLE SÉCURITÉ",
-                    "CHEF D'ÉQUIPE",
-                    "AGENT QUALITÉ",
-                    "LOGISTICIEN",
-                    "AUTRE"
-                ]
-                
-                fonction = st.selectbox("💼 Fonction/Poste*", 
-                                      ["Sélectionnez le poste..."] + fonctions_predefinies)
-                
-                # Si "AUTRE" est sélectionné, permettre la saisie libre
-                if fonction == "AUTRE":
-                    fonction_custom = st.text_input("✏️ Précisez la fonction:", placeholder="Ex: Apprenti, Stagiaire...")
-                    fonction = fonction_custom if fonction_custom else fonction
-                
-                couleur = st.text_input("🎨 Couleur préférée*", placeholder="Ex: bleu, rouge, vert...")
-                role = st.selectbox("🎭 Rôle administratif", ["user", "admin"], 
-                                   help="Admin = accès total • User = selon fonction")
-            
-            st.markdown("---")
-            st.markdown("**📋 Aperçu des permissions selon le poste :**")
-            
-            # Affichage des permissions selon la fonction
-            if fonction in ["CONTREMAÎTRE", "RTZ", "GESTIONNAIRE"]:
-                st.success("🎖️ **Poste à responsabilité** - Accès étendu automatique")
-                st.info("✅ Accès aux statistiques • ✅ Consultation des commandes • ✅ Gestion articles")
-                auto_permissions = "RESPONSABILITÉ"
-            elif fonction in ["CHEF D'ÉQUIPE", "RESPONSABLE SÉCURITÉ"]:
-                st.info("👨‍💼 **Encadrement** - Accès aux statistiques")
-                st.info("✅ Accès aux statistiques • ❌ Gestion articles")
-                auto_permissions = "ENCADREMENT"
-            else:
-                st.info("👤 **Utilisateur standard** - Accès de base au catalogue")
-                auto_permissions = "STANDARD"
-            
-            submitted = st.form_submit_button("✅ Créer utilisateur", use_container_width=True)
-            
-            if submitted:
-                # Validation avec les nouveaux champs
-                if not all([username, password, fonction != "Sélectionnez le poste...", couleur]):
-                    st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
-                elif len(password) < 6:
-                    st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
-                else:
-                    success, message = create_user(username, password, equipe, fonction, couleur)
+                if st.button("🗑️ Supprimer cet utilisateur", type="secondary"):
+                    user_id = user_options[selected_user]
+                    success, message = delete_user(user_id)
                     if success:
-                        # Attribution automatique des permissions selon la fonction
-                        assign_permissions_by_function(username, fonction)
-                        
-                        # Message de succès avec récapitulatif
-                        st.success("✅ Utilisateur créé avec succès !")
-                        st.info(f"🎯 **{username}** créé avec le profil **{auto_permissions}**")
-                        
-                        # Afficher un récapitulatif
-                        with st.expander("📋 Récapitulatif du compte créé"):
-                            st.write(f"**Nom d'utilisateur:** {username}")
-                            st.write(f"**Équipe:** {equipe}")
-                            st.write(f"**Fonction:** {fonction}")
-                            st.write(f"**Rôle:** {role}")
-                            st.write(f"**Profil de permissions:** {auto_permissions}")
-                        
+                        st.success(message)
                         st.rerun()
                     else:
-                        st.error(f"❌ {message}")
-
-def update_user_permissions(user_id, permissions):
-    """Met à jour les permissions d'un utilisateur"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users SET 
-                can_add_articles = %s,
-                can_view_stats = %s,
-                can_view_all_orders = %s
-                WHERE id = %s
-            """, (
-                permissions.get('can_add_articles', False),
-                permissions.get('can_view_stats', False), 
-                permissions.get('can_view_all_orders', False),
-                user_id
-            ))
+                        st.error(message)
+            else:
+                st.info("Aucun utilisateur supprimable")
         else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users SET 
-                can_add_articles = ?,
-                can_view_stats = ?,
-                can_view_all_orders = ?
-                WHERE id = ?
-            """, (
-                permissions.get('can_add_articles', False),
-                permissions.get('can_view_stats', False),
-                permissions.get('can_view_all_orders', False), 
-                user_id
-            ))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur mise à jour permissions: {e}")
-        return False
-def update_user_role(user_id, new_role):
-    """Met à jour le rôle d'un utilisateur"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET role = %s WHERE id = %s", (new_role, user_id))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur mise à jour rôle: {e}")
-        return False
-
-def delete_user(user_id):
-    """Supprime un utilisateur"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur suppression utilisateur: {e}")
-        return False
-
-def user_can_add_articles():
-    """Vérifie si l'utilisateur actuel peut ajouter des articles"""
-    user_info = st.session_state.get('current_user', {})
+            st.info("Aucun utilisateur trouvé")
     
-    # Admin peut toujours ajouter
-    if user_info.get('role') == 'admin':
-        return True
-    
-    # Vérifier la permission spécifique
-    username = user_info.get('username')
-    if not username:
-        return False
+    # Liste des utilisateurs en dessous
+    show_user_management()
+
+def show_user_management():
+    """Interface améliorée de gestion des utilisateurs - AVEC SUPPRESSION"""
+    st.markdown("### 👥 Gestion des utilisateurs - Administration")
     
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
+        users = get_all_users()
         
-        cursor = conn.cursor()
+        if not users:
+            st.info("Aucun utilisateur trouvé")
+            return
         
-        cursor.execute("""
-            SELECT can_add_articles 
-            FROM users 
-            WHERE username = ?
-        """, (username,))
+        # Vérifier si l'utilisateur connecté est admin
+        current_user = st.session_state.get('current_user', {})
+        is_current_admin = current_user.get('role') == 'admin'
         
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return bool(result[0]) if result[0] is not None else False
-        
-        return False
-        
-    except Exception as e:
-        return False
-
-def user_can_view_stats():
-    """Vérifie si l'utilisateur peut voir les statistiques"""
-    user_info = st.session_state.get('current_user', {})
-    
-    # Admin peut toujours voir
-    if user_info.get('role') == 'admin':
-        return True
-    
-    # Vérifier la permission spécifique
-    username = user_info.get('username')
-    if not username:
-        return False
-    
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT can_view_stats 
-            FROM users 
-            WHERE username = ?
-        """, (username,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return bool(result[0]) if result[0] is not None else False
-        
-        return False
-        
-    except Exception as e:
-        return False
-
-
-def user_can_view_all_orders():
-    """Vérifie si l'utilisateur peut voir toutes les commandes"""
-    user_info = st.session_state.get('current_user', {})
-    
-    if user_info.get('role') == 'admin':
-        return True
-    
-    username = user_info.get('username')
-    if not username:
-        return False
-    
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        if USE_POSTGRESQL:
-            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = %s", (username,))
-        else:
-            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = ?", (username,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return bool(result[0]) if result[0] is not None else False
-        
-        return False
-        
-    except Exception as e:
-        return False
-
-
-def update_user_permissions(user_id, permissions):
-    """Met à jour toutes les permissions d'un utilisateur"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE users 
-            SET can_add_articles = ?, 
-                can_view_stats = ?, 
-                can_view_all_orders = ?
-            WHERE id = ?
-        """, (
-            permissions['can_add_articles'],
-            permissions['can_view_stats'], 
-            permissions['can_view_all_orders'],
-            user_id
-        ))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur mise à jour permissions: {e}")
-        return False
-
-def create_user(username, password, equipe=None, fonction=None, couleur_preferee=None):
-    """Crée un nouvel utilisateur"""
-    try:
-        # Hacher le mot de passe
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (username.strip(), password_hash, 'user', equipe, fonction, couleur_preferee))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (username.strip(), password_hash, 'user', equipe, fonction, couleur_preferee))
-        
-        conn.commit()
-        conn.close()
-        return True, "Compte créé avec succès"
-        
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e) or "duplicate key" in str(e):
-            return False, "Ce nom d'utilisateur existe déjà"
-        return False, f"Erreur création utilisateur: {e}"
-
-def get_category_emoji(category):
-    """Retourne l'emoji correspondant à chaque catégorie"""
-    emoji_map = {
-        'Chaussures': '👟',
-        'Veste Blouson': '🧥', 
-        'Sous Veste': '👕',
-        'Veste Oxycoupeur': '🔥',
-        'Sécurité': '🦺',
-        'Gants': '🧤',
-        'Pantalon': '👖',
-        'Casque': '⛑️',
-        'Protection': '🛡️',
-        'Lunette': '🥽',
-        'Oxycoupage': '🔧',
-        'Outil': '🔨',
-        'Lampe': '💡',
-        'Marquage': '✏️'
-    }
-    return emoji_map.get(category, '📦')
-
-def get_user_orders(user_id):
-    """Récupère les commandes d'un utilisateur"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, date, total_prix, 'validée' as status, articles_json 
-                FROM commandes 
-                WHERE user_id = %s 
-                ORDER BY date DESC
-            """, (user_id,))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, date, total_prix, 'validée' as status, articles_json 
-                FROM commandes 
-                WHERE user_id = ? 
-                ORDER BY date DESC
-            """, (user_id,))
-        
-        orders = cursor.fetchall()
-        conn.close()
-        return orders
-        
-    except Exception as e:
-        st.error(f"Erreur chargement commandes: {e}")
-        return []
-
-def show_my_orders():
-    """Affiche les commandes de l'utilisateur connecté"""
-    st.markdown("### 📊 Mes commandes")
-    
-    if not st.session_state.get('current_user'):
-        st.error("❌ Utilisateur non connecté")
-        return
-    
-    user_id = st.session_state.current_user['id']
-    orders = get_user_orders(user_id)
-    
-    if not orders:
-        st.info("📦 Aucune commande trouvée")
-        return
-    
-    for order in orders:
-        order_id, date, total, status, articles_json = order
-        
-        with st.expander(f"🛍️ Commande #{order_id} - {date} - {total:.2f}€"):
-            st.write(f"**Statut:** {status}")
+        for user in users:
+            user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
             
-            try:
-                articles = json.loads(articles_json) if articles_json else []
-                if articles:
-                    st.write("**Articles commandés:**")
-                    for article in articles:
-                        st.write(f"- {article.get('Nom', 'N/A')} - {article.get('Prix', 0):.2f}€")
-                else:
-                    st.write("Aucun article dans cette commande")
-            except json.JSONDecodeError:
-                st.write("Erreur de lecture des articles")
+            with st.expander(f"👤 {username} - {fonction} ({equipe})", expanded=False):
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.write(f"**ID:** {user_id}")
+                    st.write(f"**Équipe:** {equipe}")
+                    st.write(f"**Fonction:** {fonction}")
+                    st.write(f"**Rôle:** {role}")
+                    
+                    # Interface pour modifier les permissions
+                    with st.form(f"permissions_{user_id}"):
+                        st.markdown("### 🔐 Permissions")
+                        
+                        new_can_add = st.checkbox("📝 Peut ajouter des articles", 
+                                                 value=bool(can_add_articles),
+                                                 key=f"add_{user_id}")
+                        
+                        new_can_stats = st.checkbox("📊 Peut voir les statistiques", 
+                                                   value=bool(can_view_stats),
+                                                   key=f"stats_{user_id}")
+                        
+                        new_can_all_orders = st.checkbox("📋 Peut voir toutes les commandes", 
+                                                        value=bool(can_view_all_orders),
+                                                        key=f"orders_{user_id}")
+                        
+                        if st.form_submit_button("💾 Sauvegarder permissions", use_container_width=True):
+                            new_permissions = {
+                                'can_add_articles': new_can_add,
+                                'can_view_stats': new_can_stats,
+                                'can_view_all_orders': new_can_all_orders
+                            }
+                            
+                            if update_user_permissions(user_id, new_permissions):
+                                st.success("✅ Permissions mises à jour !")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error("❌ Erreur mise à jour")
+                
+                with col2:
+                    # Actions rapides
+                    st.markdown("### ⚡ Actions rapides")
+                    
+                    if st.button(f"👨‍💼 Chef", key=f"chef_{user_id}", use_container_width=True):
+                        permissions_chef = {
+                            'can_add_articles': False,
+                            'can_view_stats': True,
+                            'can_view_all_orders': True
+                        }
+                        if update_user_permissions(user_id, permissions_chef):
+                            st.success("✅ Permissions CHEF appliquées")
+                            time.sleep(0.5)
+                            st.rerun()
+                    
+                    # BOUTON SUPPRESSION - SIMPLE
+                    if is_current_admin and username != 'admin':
+                        st.markdown("---")
+                        if st.button(f"🗑️ Supprimer {username}", 
+                                   key=f"delete_{user_id}", 
+                                   use_container_width=True, 
+                                   type="secondary"):
+                            success, message = delete_user(user_id)
+                            if success:
+                                st.success(f"✅ {message}")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {message}")
+                            
+    except Exception as e:
+        st.error(f"Erreur chargement utilisateurs: {e}")
+
+def get_all_users():
+    """Retourne toutes les infos utilisateurs (toujours 8 colonnes)"""
+    try:
+        ensure_users_table()
+
+        conn   = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT  id, username,
+                    COALESCE(equipe, ''), COALESCE(fonction, ''),
+                    COALESCE(can_add_articles, 0),
+                    COALESCE(can_view_stats, 0),
+                    COALESCE(can_view_all_orders, 0),
+                    COALESCE(role, 'user')
+            FROM users
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        st.error(f"Erreur chargement utilisateurs : {e}")
+        return []
 
 def send_password_reset_email(email, new_password):
     """Envoie un email avec le nouveau mot de passe"""
@@ -3498,6 +3042,907 @@ def show_orders_history():
             
     except Exception as e:
         st.error(f"Erreur chargement historique: {e}")
+
+def show_validation_page():
+    """Page de validation des commandes pour gestionnaires"""
+    st.markdown("### ✅ Validation des commandes - Gestionnaire")
+    
+    # Récupérer commandes en attente
+    commandes_attente = get_pending_orders()
+    
+    if not commandes_attente:
+        st.info("📭 Aucune commande en attente de validation")
+        return
+    
+    for commande in commandes_attente:
+        order_id, date, contremaitre, equipe, articles_json, total_prix = commande
+        
+        with st.expander(f"🛒 Commande #{order_id} - {contremaitre} ({equipe}) - {total_prix}€"):
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                st.write(f"📅 **Date:** {date}")
+                st.write(f"👤 **Contremaître:** {contremaitre}")
+                st.write(f"👷‍♂️ **Équipe:** {equipe}")
+                st.write(f"💰 **Total:** {total_prix}€")
+                
+                # Afficher articles
+                articles = json.loads(articles_json)
+                st.write(f"**Articles ({len(articles)}):**")
+                for article in articles[:3]:  # Afficher 3 premiers
+                    st.write(f"• {article['Nom']}")
+                if len(articles) > 3:
+                    st.write(f"... et {len(articles)-3} autres")
+            
+            with col2:
+                if st.button(f"✅ Valider", key=f"approve_{order_id}", use_container_width=True):
+                    approve_order(order_id, contremaitre)
+                    st.success("✅ Commande validée !")
+                    st.rerun()
+            
+            with col3:
+                if st.button(f"❌ Rejeter", key=f"reject_{order_id}", use_container_width=True):
+                    reject_order(order_id, contremaitre)
+                    st.error("❌ Commande rejetée")
+                    st.rerun()
+
+def send_approval_email(order_id, contremaitre, equipe, total_prix, articles_count):
+    """Envoie email au gestionnaire pour validation"""
+    try:
+        # Email du gestionnaire (à configurer)
+        GESTIONNAIRE_EMAIL = "gestionnaire@flux-para.com"
+        
+        subject = f"🛒 Nouvelle commande #{order_id} - Validation requise"
+        
+        body = f"""
+        Bonjour,
+        
+        Une nouvelle commande nécessite votre validation :
+        
+        📋 Commande #{order_id}
+        👤 Contremaître: {contremaitre}
+        👷‍♂️ Équipe: {equipe}
+        💰 Total: {total_prix}€
+        📦 Articles: {articles_count}
+        
+        🔗 Connectez-vous à FLUX/PARA Commander pour valider:
+        http://192.168.1.163:8502
+        
+        Cordialement,
+        Système FLUX/PARA Commander
+        """
+        
+        # Utiliser la fonction d'envoi email existante
+        send_email_notification(GESTIONNAIRE_EMAIL, subject, body)
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur envoi email: {e}")
+        return False
+
+def approve_order(order_id, contremaitre):
+    """Valide une commande"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commandes 
+                SET statut = 'Validée', date_validation = %s
+                WHERE id = %s
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commandes 
+                SET statut = 'Validée', date_validation = ?
+                WHERE id = ?
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Envoyer email de confirmation au contremaître
+        send_approval_notification(contremaitre, order_id, "validée")
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur validation: {e}")
+        return False
+
+def reject_order(order_id, contremaitre):
+    """Rejette une commande"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commandes 
+                SET statut = 'Rejetée', date_validation = %s
+                WHERE id = %s
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commandes 
+                SET statut = 'Rejetée', date_validation = ?
+                WHERE id = ?
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Envoyer email de rejet
+        send_approval_notification(contremaitre, order_id, "rejetée")
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur rejet: {e}")
+        return False
+
+def get_pending_orders():
+    """Récupère les commandes en attente de validation"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes 
+                WHERE statut = 'En attente'
+                ORDER BY date DESC
+            """)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes 
+                WHERE statut = 'En attente'
+                ORDER BY date DESC
+            """)
+        
+        orders = cursor.fetchall()
+        conn.close()
+        return orders
+        
+    except Exception as e:
+        st.error(f"Erreur récupération commandes: {e}")
+        return []
+
+def send_approval_notification(contremaitre, order_id, statut):
+    """Envoie email de notification au contremaître (validation/rejet)"""
+    try:
+        # Récupérer l'email du contremaître depuis la base
+        user_email = get_user_email(contremaitre)
+        
+        if statut == "validée":
+            subject = f"✅ Commande #{order_id} VALIDÉE"
+            body = f"""
+            Bonjour {contremaitre},
+            
+            ✅ Bonne nouvelle ! Votre commande #{order_id} a été VALIDÉE par le gestionnaire.
+            
+            🚀 Votre commande va être traitée et livrée prochainement.
+            
+            Vous pouvez consulter le statut dans l'historique de FLUX/PARA Commander.
+            
+            Cordialement,
+            Système FLUX/PARA Commander
+            """
+        else:  # rejetée
+            subject = f"❌ Commande #{order_id} REJETÉE"
+            body = f"""
+            Bonjour {contremaitre},
+            
+            ❌ Votre commande #{order_id} a été REJETÉE par le gestionnaire.
+            
+            💡 Contactez votre gestionnaire pour connaître les raisons du rejet.
+            Vous pouvez créer une nouvelle commande corrigée.
+            
+            Cordialement,
+            Système FLUX/PARA Commander
+            """
+        
+        if user_email:
+            send_email_notification(user_email, subject, body)
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur notification: {e}")
+        return False
+
+def get_user_email(username):
+    """Récupère l'email d'un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT email FROM users WHERE username = %s", (username,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT email FROM users WHERE username = ?", (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+        
+    except Exception as e:
+        return None
+
+def delete_user(user_id):
+    """Supprime un utilisateur de la base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect('users.db')
+        
+        cursor = conn.cursor()
+        
+        # Vérifier que ce n'est pas l'admin principal
+        cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        
+        if user and user[0] == 'admin':
+            return False, "Impossible de supprimer l'administrateur principal"
+        
+        # Supprimer l'utilisateur
+        cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return True, "Utilisateur supprimé avec succès"
+        
+    except Exception as e:
+        return False, f"Erreur suppression: {e}"
+
+def user_can_add_articles():
+    """Vérifie si l'utilisateur actuel peut ajouter des articles"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Admin peut toujours ajouter
+    if user_info.get('role') == 'admin':
+        return True
+    
+    # Vérifier la permission spécifique
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT can_add_articles 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+def user_can_view_stats():
+    """Vérifie si l'utilisateur peut voir les statistiques"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Admin peut toujours voir
+    if user_info.get('role') == 'admin':
+        return True
+    
+    # Vérifier la permission spécifique
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT can_view_stats 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+
+def user_can_view_all_orders():
+    """Vérifie si l'utilisateur peut voir toutes les commandes"""
+    user_info = st.session_state.get('current_user', {})
+    
+    if user_info.get('role') == 'admin':
+        return True
+    
+    username = user_info.get('username')
+    if not username:
+        return False
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        if USE_POSTGRESQL:
+            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = %s", (username,))
+        else:
+            cursor.execute("SELECT can_view_all_orders FROM users WHERE username = ?", (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return bool(result[0]) if result[0] is not None else False
+        
+        return False
+        
+    except Exception as e:
+        return False
+
+
+def update_user_permissions(user_id, permissions):
+    """Met à jour toutes les permissions d'un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE users 
+            SET can_add_articles = ?, 
+                can_view_stats = ?, 
+                can_view_all_orders = ?
+            WHERE id = ?
+        """, (
+            permissions['can_add_articles'],
+            permissions['can_view_stats'], 
+            permissions['can_view_all_orders'],
+            user_id
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour permissions: {e}")
+        return False
+
+def create_user(username: str, password: str,
+                equipe: str, fonction: str,
+                couleur_preferee: str = "DT770") -> tuple[bool, str]:
+    """
+    Enregistre un nouvel utilisateur via le formulaire « Inscription ».
+    Retourne (success, message).
+    Règles :
+      • rôle = 'user'
+      • permissions automatiques selon le poste
+    """
+    # règles simples : poste à responsabilité → toutes permissions
+    responsabilite = fonction.lower() in {"contremaître", "contremaitre", "rtz"}
+    can_add_articles     = 1
+    can_view_stats       = 1 if responsabilite else 0
+    can_view_all_orders  = 1 if responsabilite else 0
+
+    ok = create_new_user(
+        username=username,
+        password=password,
+        equipe=equipe,
+        fonction=fonction,
+        can_add_articles=can_add_articles,
+        can_view_stats=can_view_stats,
+        can_view_all_orders=can_view_all_orders,
+        role="user"
+    )
+    if ok:
+        return True, "✅ Utilisateur créé avec succès !"
+    return False, "❌ Impossible de créer l'utilisateur."
+
+def get_category_emoji(category):
+    """Retourne l'emoji correspondant à chaque catégorie"""
+    emoji_map = {
+        'Chaussures': '👟',
+        'Veste Blouson': '🧥', 
+        'Sous Veste': '👕',
+        'Veste Oxycoupeur': '🔥',
+        'Sécurité': '🦺',
+        'Gants': '🧤',
+        'Pantalon': '👖',
+        'Casque': '⛑️',
+        'Protection': '🛡️',
+        'Lunette': '🥽',
+        'Oxycoupage': '🔧',
+        'Outil': '🔨',
+        'Lampe': '💡',
+        'Marquage': '✏️'
+    }
+    return emoji_map.get(category, '📦')
+
+def get_user_orders(user_id):
+    """Récupère les commandes d'un utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
+                WHERE user_id = %s 
+                ORDER BY date DESC
+            """, (user_id,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                FROM commandes 
+                WHERE user_id = ? 
+                ORDER BY date DESC
+            """, (user_id,))
+        
+        orders = cursor.fetchall()
+        conn.close()
+        return orders
+        
+    except Exception as e:
+        st.error(f"Erreur chargement commandes: {e}")
+        return []
+
+def show_my_orders() -> None:
+    """Affiche les commandes de l'utilisateur connecté (admin OU contremaître)."""
+    user = get_current_user()
+    if not user:
+        st.warning("Veuillez vous connecter.")
+        return
+
+    try:
+        commandes = get_user_orders(user["id"])          # (id, date, total, statut, articles_json)
+    except Exception as e:
+        st.error(f"Erreur chargement commandes : {e}")
+        return
+
+    if not commandes:
+        st.info("📭 Aucune commande trouvée.")
+        return
+
+    for order_id, date_cmd, total, statut, articles_json in commandes:
+        with st.expander(f"🧾 Commande #{order_id} – {date_cmd} – {total:.2f} €"):
+            st.write(f"**Statut :** {statut}")
+
+            # --- décodage sûr du champ articles_json -------------------------
+            try:
+                contenu = json.loads(articles_json) if articles_json else []
+            except Exception:
+                contenu = articles_json            # déjà python ?
+            if not isinstance(contenu, list):
+                contenu = [contenu]                # on force une liste
+            # ------------------------------------------------------------------
+
+            st.markdown("#### 📦 Articles commandés")
+            if not contenu:
+                st.write("Aucun article.")
+            for art in contenu:
+                try:
+                    nom, prix = parse_article_for_display(art)
+                    ligne = f"• {nom}"
+                    if prix is not None:
+                        ligne += f" – {float(prix):.2f} €"
+                    st.write(ligne)
+                except Exception as e:
+                    st.error(f"❌ Impossible d'afficher un article : {e}")
+
+def create_missing_columns():
+    """Ajoute les colonnes manquantes à la base de données"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        
+        # Ajouter les colonnes de permissions si elles n'existent pas
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN can_add_articles INTEGER DEFAULT 0")
+        except:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN can_view_stats INTEGER DEFAULT 0")
+        except:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN can_view_all_orders INTEGER DEFAULT 0")
+        except:
+            pass
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Erreur mise à jour BDD: {e}")
+        return False
+
+def get_all_users():
+    """Récupère tous les utilisateurs"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        
+        # D'abord créer les colonnes si elles n'existent pas
+        create_missing_columns()
+        
+        cursor.execute("""
+            SELECT id, username, equipe, fonction, 
+                   COALESCE(can_add_articles, 0), 
+                   COALESCE(can_view_stats, 0), 
+                   COALESCE(can_view_all_orders, 0), 
+                   role 
+            FROM users
+        """)
+        
+        users = cursor.fetchall()
+        conn.close()
+        return users
+        
+    except Exception as e:
+        st.error(f"Erreur chargement utilisateurs: {e}")
+        return []
+
+def show_admin_page():
+    """Page complète d'administration des utilisateurs"""
+    st.markdown("# 👥 Gestion des utilisateurs - Administration")
+    
+    # Deux colonnes principales
+    col1, col2 = st.columns(2)
+    
+    # === CRÉATION D'UTILISATEUR ===
+    with col1:
+        with st.expander("➕ Créer un nouvel utilisateur", expanded=True):
+            with st.form("create_user_form"):
+                username = st.text_input("👤 Nom d'utilisateur*")
+                password = st.text_input("🔐 Mot de passe*", type="password")
+                equipe = st.selectbox(
+                    "👥 Équipe*",
+                    ["para", "flux", "finissage"],
+                    index=0
+                )
+                fonction = st.selectbox(
+                    "💼 Fonction*",
+                    ["contremaitre", "RTZ", "technicien"],
+                    index=0
+                )
+                
+                st.markdown("### 🔐 Permissions")
+                can_add_articles = st.checkbox("📝 Peut ajouter des articles")
+                can_view_stats = st.checkbox("📊 Peut voir les statistiques") 
+                can_view_all_orders = st.checkbox("📋 Peut voir toutes les commandes")
+                
+                role = st.selectbox("🎭 Rôle:", ["user", "admin"])
+                
+                if st.form_submit_button("✅ Créer l'utilisateur", use_container_width=True):
+                    if username and password and equipe and fonction:
+                        success = create_new_user(username, password, equipe, fonction, 
+                                                can_add_articles, can_view_stats, 
+                                                can_view_all_orders, role)
+                        if success:
+                            st.success(f"✅ Utilisateur {username} créé !")
+                            st.rerun()
+                        else:
+                            st.error("❌ Erreur création utilisateur")
+                    else:
+                        st.error("❌ Veuillez remplir tous les champs obligatoires")
+    
+    # === SUPPRESSION D'UTILISATEUR ===
+    with col2:
+        with st.expander("🗑️ Supprimer un utilisateur", expanded=True):
+            users = get_all_users()
+            
+            if users:
+                # Filtrer les utilisateurs (pas l'admin)
+                user_options = {}
+                for user in users:
+                    if user[1] != 'admin':  # user[1] = username
+                        user_options[f"{user[1]} ({user[2]})"] = user[0]  # nom(équipe) -> id
+                
+                if user_options:
+                    selected_user = st.selectbox("Choisir un utilisateur à supprimer:", 
+                                               options=list(user_options.keys()))
+                    
+                    if st.button("🗑️ Supprimer cet utilisateur", 
+                               type="secondary", 
+                               use_container_width=True):
+                        user_id = user_options[selected_user]
+                        success, message = delete_user(user_id)
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                else:
+                    st.info("Aucun utilisateur supprimable")
+            else:
+                st.info("Aucun utilisateur trouvé")
+    
+    # === LISTE DES UTILISATEURS ===
+    st.markdown("---")
+    show_user_management()
+
+def create_new_user(username, password, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role):
+    """Crée un nouvel utilisateur avec toutes les permissions"""
+    try:
+        ensure_users_table()
+
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+
+        conn   = sqlite3.connect("users.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO users (username, password_hash, equipe, fonction,
+             role, can_add_articles, can_view_stats, can_view_all_orders)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                pwd_hash,
+                equipe,
+                fonction,
+                role,
+                int(can_add_articles),
+                int(can_view_stats),
+                int(can_view_all_orders),
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except sqlite3.IntegrityError:
+        st.error("❌ Nom d'utilisateur déjà utilisé.")
+    except Exception as e:
+        st.error(f"❌ Erreur création utilisateur : {e}")
+    return False
+
+def delete_user(user_id):
+    """Supprime un utilisateur de la base de données"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        
+        # Vérifier que ce n'est pas l'admin principal
+        cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        
+        if user and user[0] == 'admin':
+            conn.close()
+            return False, "Impossible de supprimer l'administrateur principal"
+        
+        # Supprimer l'utilisateur
+        cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return True, "Utilisateur supprimé avec succès"
+        
+    except Exception as e:
+        return False, f"Erreur suppression: {e}"
+
+def update_user_permissions(user_id, permissions):
+    """Met à jour toutes les permissions d'un utilisateur"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE users 
+            SET can_add_articles = ?, 
+                can_view_stats = ?, 
+                can_view_all_orders = ?
+            WHERE id = ?
+        """, (
+            permissions['can_add_articles'],
+            permissions['can_view_stats'], 
+            permissions['can_view_all_orders'],
+            user_id
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour permissions: {e}")
+        return False
+
+# --- À placer juste au-dessus des fonctions qui accèdent à la table users ---
+def ensure_users_table():
+    """Crée la table users et AJOUTE les colonnes manquantes si besoin."""
+    conn   = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+
+    # schéma complet
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password_hash TEXT,
+            equipe  TEXT,
+            fonction TEXT,
+            role    TEXT DEFAULT 'user',
+            can_add_articles    INTEGER DEFAULT 0,
+            can_view_stats      INTEGER DEFAULT 0,
+            can_view_all_orders INTEGER DEFAULT 0
+        )
+    """)
+
+    # ── si la table existait déjà on ajoute les colonnes manquantes ──
+    expected = {
+        "password_hash":        "TEXT",
+        "equipe":               "TEXT",
+        "fonction":             "TEXT",
+        "role":                 "TEXT DEFAULT 'user'",
+        "can_add_articles":     "INTEGER DEFAULT 0",
+        "can_view_stats":       "INTEGER DEFAULT 0",
+        "can_view_all_orders":  "INTEGER DEFAULT 0",
+    }
+
+    cursor.execute("PRAGMA table_info(users)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    for col, col_type in expected.items():
+        if col not in existing_cols:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
+
+    conn.commit()
+    conn.close()
+
+# --- GESTION DES ARTICLES : SUPPRESSION ---------------------------------
+def delete_article(reference: str) -> tuple[bool, str]:
+    """Supprime un article (référence) du fichier CSV puis invalide le cache."""
+    try:
+        df = pd.read_csv("articles.csv")
+        if reference not in df["Référence"].astype(str).values:
+            return False, "Référence introuvable"
+        df = df[df["Référence"].astype(str) != str(reference)]
+        df.to_csv("articles.csv", index=False)
+        st.cache_data.clear()
+        return True, "✅ Article supprimé avec succès"
+    except Exception as e:
+        return False, f"❌ Erreur suppression article : {e}"
+
+# 🔽 placez-la dans la zone « fonctions commandes », juste après get_user_orders()
+def delete_order(order_id: int, current_user: dict) -> tuple[bool, str]:
+    """
+    Supprime une commande.
+    – Un admin peut supprimer n'importe quelle commande
+    – Un user ne peut supprimer que les siennes
+    """
+    try:
+        if USE_POSTGRESQL:
+            conn   = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM commandes WHERE id = %s", (order_id,))
+        else:
+            conn   = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM commandes WHERE id = ?", (order_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False, "Commande introuvable"
+
+        owner_id = row[0]
+        if current_user["role"] != "admin" and owner_id != current_user["id"]:
+            conn.close()
+            return False, "⛔ Action non autorisée"
+
+        # suppression effective
+        if USE_POSTGRESQL:
+            cursor.execute("DELETE FROM commandes WHERE id = %s", (order_id,))
+        else:
+            cursor.execute("DELETE FROM commandes WHERE id = ?", (order_id,))
+        conn.commit()
+        conn.close()
+        return True, "✅ Commande supprimée avec succès"
+
+    except Exception as e:
+        return False, f"❌ Erreur suppression commande : {e}"
+
+# ------------------------------------------------------------------
+# Helper : normalise n'importe quel format d'article enregistré
+# ------------------------------------------------------------------
+def parse_article_for_display(raw) -> Tuple[str, Optional[float]]:
+    """
+    Retourne (nom, prix) quel que soit le format de `raw` :
+    - dict : {'Nom': 'Casque', 'Prix': 9.9}
+    - str JSON  : '{"Nom":"Casque","Prix":9.9}'
+    - str brute : "Casque"
+    """
+    if isinstance(raw, dict):
+        nom  = raw.get("Nom") or raw.get("nom") or raw.get("name") or "Article"
+        prix = raw.get("Prix") or raw.get("prix") or raw.get("price")
+        return nom, prix
+
+    if isinstance(raw, str):
+        # JSON ?
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return parse_article_for_display(obj)
+        except Exception:
+            pass
+        # Chaîne python ?
+        try:
+            obj = ast.literal_eval(raw)
+            if isinstance(obj, dict):
+                return parse_article_for_display(obj)
+        except Exception:
+            pass
+        return raw, None               # juste le texte
+
+    return str(raw), None
+
+# helper pour récupérer l'utilisateur courant (facilement ré-utilisable)
+def get_current_user():
+    return st.session_state.get("current_user")
+
+# ─── constants de permission (clé bool en BDD / session) ──────────
+PERM_ADD_ARTICLES     = "can_add_articles"
+PERM_VIEW_STATS       = "can_view_stats"
+PERM_VIEW_ALL_ORDERS  = "can_view_all_orders"
+
+def has_perm(user: dict | None, perm: str) -> bool:
+    """True si l'utilisateur est admin OU possède explicitement la permission."""
+    return bool(user) and (user.get("role") == "admin" or user.get(perm, 0))
+
+def build_sidebar():
+    user = get_current_user()
+    st.sidebar.page_link("catalogue", label="📕 Catalogue")
+    st.sidebar.page_link("cart",      label="🛒 Panier")
+    st.sidebar.page_link("orders",    label="📦 Mes commandes")
+    if has_perm(user, PERM_VIEW_STATS):
+        st.sidebar.page_link("stats", label="📊 Statistiques")
+    if user and user["role"] == "admin":
+        st.sidebar.page_link("users", label="👤 Utilisateurs")
 
 if __name__ == "__main__":
     main()
