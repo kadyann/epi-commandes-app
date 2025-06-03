@@ -120,6 +120,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    section[data-testid="stSidebar"] {
+        display: none !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # === VARIABLES GLOBALES ===
 MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
 
@@ -519,36 +529,41 @@ def authenticate_user(username, password):
     Renvoie le dict utilisateur si les identifiants sont valides, sinon None
     """
     ensure_users_table()
-
-    conn   = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, username, password, password_hash, role, equipe, fonction,
-               can_add_articles, can_view_stats, can_view_all_orders
-        FROM   users
-        WHERE  username = ?
-    """, (username,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row:
-        return None
-
-    (uid, user, pwd_clear, pwd_hash, role,
-     equipe, fonction, c_add, c_stats, c_all) = row
-
-    # 1) essayer le hash sécurisé
-    if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
-        pass_ok = True
-    # 2) sinon, compatibilité ancien schéma (mot de passe stocké en clair)
-    elif pwd_clear and password == pwd_clear:
-        pass_ok = True
+    if USE_POSTGRESQL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, username, password, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
+            FROM users WHERE username = %s
+        """, (username,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all) = row
+        # Vérification du mot de passe hashé
+        if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
+            pass_ok = True
+        else:
+            pass_ok = False
     else:
-        pass_ok = False
-
+        conn   = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, username, password_hash, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
+            FROM users WHERE username = ?
+        """, (username,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all) = row
+        if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
+            pass_ok = True
+        else:
+            pass_ok = False
     if not pass_ok:
         return None
-
     return {
         "id": uid,
         "username": user,
@@ -736,7 +751,7 @@ def show_cart_sidebar():
     
     grouped_articles = grouper_articles_panier(st.session_state.cart)
     
-    for group in grouped_articles:
+    for i, group in enumerate(grouped_articles):
         article = group['article']
         quantite = group['quantite']
         prix_unitaire = float(article['Prix'])
@@ -750,7 +765,7 @@ def show_cart_sidebar():
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
             
             with col_minus:
-                if st.button("➖", key=f"sidebar_minus_{article['Nom']}", help="Réduire quantité"):
+                if st.button("➖", key=f"sidebar_minus_{i}_{article['Nom']}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
             
@@ -758,12 +773,12 @@ def show_cart_sidebar():
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
             
             with col_plus:
-                if st.button("➕", key=f"sidebar_plus_{article['Nom']}", help="Augmenter quantité"):
+                if st.button("➕", key=f"sidebar_plus_{i}_{article['Nom']}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
             
             with col_del:
-                if st.button("🗑️", key=f"sidebar_delete_{article['Nom']}", help="Supprimer"):
+                if st.button("🗑️", key=f"sidebar_delete_{i}_{article['Nom']}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
             
@@ -812,13 +827,7 @@ def show_login():
     with st.form("login_form"):
         username = st.text_input("👤 Nom d'utilisateur")
         password = st.text_input("🔑 Mot de passe", type="password")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            login_button = st.form_submit_button("🔐 Se connecter", use_container_width=True)
-        with col2:
-            register_button = st.form_submit_button("📝 S'inscrire", use_container_width=True)
-        
+        login_button = st.form_submit_button("🔐 Se connecter", use_container_width=True)
         if login_button:
             if username and password:
                 user = authenticate_user(username, password)
@@ -831,10 +840,6 @@ def show_login():
                     st.error("Hmm… Ces identifiants ne me disent rien !")
             else:
                 st.error("❌ Veuillez remplir tous les champs")
-        
-        if register_button:
-            st.session_state.page = 'register'
-            st.rerun()
     
     if st.button("🔑 Mot de passe oublié ?", use_container_width=True):
         st.session_state.page = 'reset_password'
@@ -856,7 +861,7 @@ def show_register():
             
             # Sélection d'équipe
             equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"]
-            equipe = st.selectbox("👷‍♂️ Équipe*", ["Sélectionnez..."] + equipes)
+            equipe = st.selectbox("👥 Équipe*", ["Sélectionnez..."] + equipes)
         
         with col2:
             # NOUVEAU: Menu déroulant avec rôles prédéfinis
@@ -1709,23 +1714,16 @@ def show_mes_commandes():
             
             # Afficher les articles
             try:
-                articles = json.loads(articles_json) if articles_json else []
-                if articles:
-                    st.write("**🛡️ Articles commandés:**")
-                    
-                    # Grouper les articles identiques
-                    grouped_articles = grouper_articles_panier(articles)
-                    
-                    for group in grouped_articles:
-                        article = group['article']
-                        quantite = group['quantite']
-                        prix_unitaire = float(article['Prix'])
-                        prix_total = prix_unitaire * quantite
-                        
-                        st.write(f"• **{article['Nom']}**")
-                        st.write(f"  └ Quantité: {quantite} × {prix_unitaire:.2f}€ = {prix_total:.2f}€")
-                else:
-                    st.write("❓ Aucun article dans cette commande")
+                articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
+                if not isinstance(articles, list):
+                    articles = [articles]
+                for article in articles:
+                    if isinstance(article, dict) and 'Nom' in article:
+                        st.write(f"• {article['Nom']}")
+                    elif isinstance(article, dict):
+                        st.write(f"• {article.get('nom', article.get('name', 'Article sans nom'))}")
+                    else:
+                        st.write(f"• {str(article)}")
             except json.JSONDecodeError:
                 st.error("❌ Erreur de lecture des articles")
             except Exception as e:
@@ -1749,345 +1747,249 @@ def show_mes_commandes():
         st.rerun()
 
 def show_stats():
-    """Page de statistiques des commandes - Selon permissions"""
-    user_info = st.session_state.get('current_user', {})
-    
-    # Vérifier les droits
-    if not user_can_view_stats():
-        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation de voir les statistiques")
-        st.info("Contactez un administrateur pour obtenir cette permission.")
+    if not st.session_state.current_user.get("can_view_stats"):
+        st.error("⛔ Accès refusé - Vous n'avez pas l'autorisation de voir les statistiques")
         return
-    
-    # Titre selon le rôle
-    if user_info.get('role') == 'admin':
-        st.markdown("### 📊 Statistiques globales - Administration")
-    else:
-        st.markdown("### 📊 Statistiques des commandes")
-    
+    st.markdown("## 📊 Statistiques globales - Administration")
+    st.markdown("### 🟩 Vue d'ensemble")
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from collections import Counter, defaultdict
+    from datetime import datetime
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    import re
+
+    def nom_base_article(nom):
+        # Regroupe par nom sans la taille (ex: "Chaussure de sécurité JALAS Taille 37" -> "Chaussure de sécurité JALAS")
+        return re.sub(r"\s*[Tt]aille\s*[0-9A-Za-z]+", "", nom).strip()
+
     try:
+        # Récupérer toutes les commandes
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes
+            """)
+            rows = cursor.fetchall()
+            conn.close()
         else:
             conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        # Récupérer toutes les commandes
-        cursor.execute("""
-            SELECT id, date, contremaître, equipe, articles_json, total_prix, nb_articles
-            FROM commandes 
-            ORDER BY date DESC
-        """)
-        
-        commandes = cursor.fetchall()
-        conn.close()
-        
-        if not commandes:
-            st.info("📭 Aucune commande trouvée pour générer des statistiques")
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+
+        if not rows:
+            st.info("Aucune commande enregistrée.")
             return
-        
-        # Convertir en DataFrame pour faciliter l'analyse
-        df_commandes = pd.DataFrame(commandes, columns=[
-            'id', 'date', 'contremaître', 'equipe', 'articles_json', 'total_prix', 'nb_articles'
-        ])
-        
-        # Convertir les dates
-        df_commandes['date'] = pd.to_datetime(df_commandes['date'])
-        df_commandes['mois'] = df_commandes['date'].dt.to_period('M')
-        
-        # === MÉTRIQUES GÉNÉRALES ===
-        st.markdown("### 📈 Vue d'ensemble")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            total_commandes = len(df_commandes)
-            st.metric("🛡️ Total commandes", total_commandes)
-        
-        with col2:
-            total_montant = df_commandes['total_prix'].sum()
-            st.metric("💰 Montant total", f"{total_montant:.2f}€")
-        
-        with col3:
-            moyenne_commande = df_commandes['total_prix'].mean()
-            st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
-        
-        with col4:
-            total_articles = df_commandes['nb_articles'].sum()
-            st.metric("📦 Total articles", total_articles)
-        
-        st.markdown("---")
-        
-        # === GRAPHIQUES ===
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Évolution des commandes par mois
-            st.markdown("#### 📅 Évolution mensuelle")
-            commandes_par_mois = df_commandes.groupby('mois').agg({
-                'id': 'count',
-                'total_prix': 'sum'
-            }).reset_index()
-            commandes_par_mois['mois_str'] = commandes_par_mois['mois'].astype(str)
-            
-            fig_evolution = px.line(
-                commandes_par_mois, 
-                x='mois_str', 
-                y='id',
-                title="Nombre de commandes par mois",
-                labels={'id': 'Nb commandes', 'mois_str': 'Mois'}
-            )
-            fig_evolution.update_layout(height=400)
-            st.plotly_chart(fig_evolution, use_container_width=True)
-        
-        with col2:
-            # Répartition par équipe
-            st.markdown("#### 👷‍♂️ Répartition par équipe")
-            commandes_par_equipe = df_commandes.groupby('equipe').agg({
-                'id': 'count',
-                'total_prix': 'sum'
-            }).reset_index()
-            
-            fig_equipes = px.pie(
-                commandes_par_equipe,
-                values='id',
-                names='equipe',
-                title="Commandes par équipe"
-            )
-            fig_equipes.update_layout(height=400)
-            st.plotly_chart(fig_equipes, use_container_width=True)
-        
-        # === MONTANTS PAR MOIS ===
-        st.markdown("#### 💰 Évolution des montants")
-        fig_montants = px.bar(
-            commandes_par_mois,
-            x='mois_str',
-            y='total_prix',
-            title="Montant total des commandes par mois",
-            labels={'total_prix': 'Montant (€)', 'mois_str': 'Mois'}
-        )
-        fig_montants.update_layout(height=400)
-        st.plotly_chart(fig_montants, use_container_width=True)
-        
-        # === TOP CONTREMAÎTRES ===
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 🏆 Top contremaîtres (nb commandes)")
-            top_contremaitres = df_commandes.groupby('contremaître').agg({
-                'id': 'count',
-                'total_prix': 'sum'
-            }).sort_values('id', ascending=False).head(10)
-            
-            for idx, (contremaitre, data) in enumerate(top_contremaitres.iterrows(), 1):
-                st.markdown(f"{idx}. **{contremaitre}** - {data['id']} commandes ({data['total_prix']:.2f}€)")
-        
-        with col2:
-            st.markdown("#### 💎 Top contremaîtres (montant)")
-            top_montants = df_commandes.groupby('contremaître').agg({
-                'id': 'count',
-                'total_prix': 'sum'
-            }).sort_values('total_prix', ascending=False).head(10)
-            
-            for idx, (contremaitre, data) in enumerate(top_montants.iterrows(), 1):
-                st.markdown(f"{idx}. **{contremaitre}** - {data['total_prix']:.2f}€ ({data['id']} commandes)")
-        
-        # === ANALYSE DES ARTICLES ===
-        st.markdown("---")
-        st.markdown("#### 📦 Analyse des articles les plus commandés")
-        
-        # Analyser tous les articles commandés
-        tous_articles = []
-        for articles_json in df_commandes['articles_json']:
+
+        # Construire un DataFrame
+        df = pd.DataFrame(rows, columns=["id", "date", "contremaitre", "equipe", "articles_json", "total_prix"])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["total_prix"] = pd.to_numeric(df["total_prix"], errors="coerce")
+
+        # Statistiques globales
+        nb_commandes = len(df)
+        total_depense = df["total_prix"].sum()
+        moyenne_commande = df["total_prix"].mean()
+        total_articles = 0
+        articles_counter = Counter()
+        articles_counter_base = Counter()
+        for articles_json in df["articles_json"]:
             try:
-                articles = json.loads(articles_json)
+                articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
+                if not isinstance(articles, list):
+                    articles = [articles]
+                total_articles += len(articles)
                 for article in articles:
-                    tous_articles.append({
-                        'nom': article['Nom'],
-                        'prix': float(article['Prix']),
-                        'categorie': article.get('Catégorie', 'Non définie')
-                    })
-            except:
+                    if isinstance(article, dict):
+                        nom = article.get("Nom") or article.get("nom") or article.get("name")
+                        if nom:
+                            articles_counter[nom] += 1
+                            articles_counter_base[nom_base_article(nom)] += 1
+            except Exception:
                 continue
-        
-        if tous_articles:
-            df_articles = pd.DataFrame(tous_articles)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Articles les plus commandés
-                top_articles = df_articles['nom'].value_counts().head(10)
-                st.markdown("**🔥 Articles les plus commandés:**")
-                for idx, (article, count) in enumerate(top_articles.items(), 1):
-                    st.markdown(f"{idx}. {article} - {count}x")
-            
-            with col2:
-                # Répartition par catégorie
-                if 'categorie' in df_articles.columns:
-                    categories = df_articles['categorie'].value_counts()
-                    fig_categories = px.pie(
-                        values=categories.values,
-                        names=categories.index,
-                        title="Répartition par catégorie"
-                    )
-                    fig_categories.update_layout(height=300)
-                    st.plotly_chart(fig_categories, use_container_width=True)
-        
-        # === TABLEAU DÉTAILLÉ ===
-        st.markdown("---")
-        st.markdown("#### 📋 Tableau détaillé des commandes")
-        
-        # Préparer les données pour affichage
-        df_display = df_commandes[['id', 'date', 'contremaître', 'equipe', 'total_prix', 'nb_articles']].copy()
-        df_display['date'] = df_display['date'].dt.strftime('%d/%m/%Y %H:%M')
-        df_display.columns = ['ID', 'Date', 'Contremaître', 'Équipe', 'Montant (€)', 'Nb articles']
-        
-        st.dataframe(df_display, use_container_width=True)
-        
-        # === EXPORT ===
-        st.markdown("---")
-        st.markdown("#### 📥 Export des données")
-        
-        col1, col2 = st.columns(2)
-        
+
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            # Export CSV
-            csv_data = df_display.to_csv(index=False)
-            st.download_button(
-                label="📊 Télécharger CSV",
-                data=csv_data,
-                file_name=f"statistiques_commandes_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
+            st.metric("🧾 Total commandes", nb_commandes)
         with col2:
-            # Résumé statistique
-            if st.button("📈 Générer rapport PDF", use_container_width=True):
-                st.info("🚧 Fonctionnalité en développement")
-        
+            st.metric("💰 Montant total", f"{total_depense:.2f}€")
+        with col3:
+            st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
+        with col4:
+            st.metric("📦 Total articles", total_articles)
+
+        # Évolution mensuelle
+        st.markdown("### 📈 Évolution mensuelle")
+        df["mois"] = df["date"].dt.to_period("M").astype(str)
+        commandes_par_mois = df.groupby("mois")["id"].count().reset_index()
+        commandes_par_mois.columns = ["Mois", "Nb commandes"]
+        fig1 = px.bar(commandes_par_mois, x="Mois", y="Nb commandes", title="Nombre de commandes par mois")
+        st.plotly_chart(fig1, use_container_width=True)
+
+        ca_par_mois = df.groupby("mois")["total_prix"].sum().reset_index()
+        ca_par_mois.columns = ["Mois", "Montant (€)"]
+        fig2 = px.bar(ca_par_mois, x="Mois", y="Montant (€)", title="Montant total des commandes par mois")
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # Répartition par équipe
+        st.markdown("### 🧑‍🤝‍🧑 Répartition par équipe")
+        equipe_counts = df["equipe"].value_counts()
+        fig3 = px.pie(values=equipe_counts.values, names=equipe_counts.index, title="Commandes par équipe")
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # Top contremaîtres
+        st.markdown("### 🏅 Top contremaîtres (nb commandes)")
+        top_users = df["contremaitre"].value_counts().head(5)
+        st.table(top_users)
+        st.markdown("### 💎 Top contremaîtres (montant)")
+        top_users_montant = df.groupby("contremaitre")["total_prix"].sum().sort_values(ascending=False).head(5)
+        st.table(top_users_montant)
+
+        # Top articles
+        st.markdown("### 📦 Analyse des articles les plus commandés")
+        if articles_counter_base:
+            top_articles_base = articles_counter_base.most_common(10)
+            st.table(pd.DataFrame(top_articles_base, columns=["Article", "Quantité totale"]))
+        else:
+            st.info("Aucun article exploitable pour le top articles.")
+
+        # --- Export CSV ---
+        st.markdown("### 🗄️ Export des données")
+        csv = df.to_csv(index=False).encode('utf-8')
+        col_csv, col_pdf = st.columns([2, 3])
+        with col_csv:
+            st.download_button(
+                label="📥 Télécharger CSV",
+                data=csv,
+                file_name="stats_commandes.csv",
+                mime="text/csv"
+            )
+        # --- Rapport PDF ---
+        with col_pdf:
+            if st.button("📝 Générer rapport PDF", use_container_width=True):
+                buffer = io.BytesIO()
+                doc = SimpleDocTemplate(buffer, pagesize=A4)
+                styles = getSampleStyleSheet()
+                story = []
+                story.append(Paragraph("Statistiques globales FLUX/PARA", styles['Title']))
+                story.append(Spacer(1, 12))
+                story.append(Paragraph(f"Total commandes : <b>{nb_commandes}</b>", styles['Normal']))
+                story.append(Paragraph(f"Montant total : <b>{total_depense:.2f} €</b>", styles['Normal']))
+                story.append(Paragraph(f"Moyenne/commande : <b>{moyenne_commande:.2f} €</b>", styles['Normal']))
+                story.append(Paragraph(f"Total articles : <b>{total_articles}</b>", styles['Normal']))
+                story.append(Spacer(1, 12))
+                # Top utilisateurs
+                story.append(Paragraph("Top contremaîtres (nb commandes) :", styles['Heading3']))
+                data_users = [["Contremaître", "Nb commandes"]] + [[u, c] for u, c in top_users.items()]
+                t_users = Table(data_users)
+                t_users.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                story.append(t_users)
+                story.append(Spacer(1, 12))
+                # Top articles (par nom de base)
+                story.append(Paragraph("Top articles commandés :", styles['Heading3']))
+                if articles_counter_base:
+                    data_articles = [["Article", "Quantité totale"]] + list(top_articles_base)
+                    t_articles = Table(data_articles)
+                    t_articles.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                    ]))
+                    story.append(t_articles)
+                else:
+                    story.append(Paragraph("Aucun article exploitable.", styles['Normal']))
+                doc.build(story)
+                buffer.seek(0)
+                st.download_button(
+                    label="📄 Télécharger rapport PDF",
+                    data=buffer.getvalue(),
+                    file_name="rapport_stats_flux_para.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
     except Exception as e:
-        st.error(f"Erreur chargement statistiques: {e}")
+        st.error(f"Erreur chargement stats détaillées: {e}")
 
 def show_historique():
-    """Affiche l'historique des commandes avec correction parsing articles"""
-    user_info = st.session_state.get('current_user', {})
-    
-    # Vérifier les droits d'accès
-    if not user_can_view_all_orders():
-        st.error("🚫 Accès refusé - Vous n'avez pas l'autorisation de voir toutes les commandes")
-        st.info("Contactez un administrateur pour obtenir cette permission.")
+    if not st.session_state.current_user.get("can_view_all_orders"):
+        st.error("⛔ Accès refusé - Vous n'avez pas l'autorisation de voir toutes les commandes")
         return
+    st.markdown("### 📊 Historique des commandes")
     
-    if user_info.get('role') == 'admin':
-        st.markdown("### 📊 Historique global - Administration")
-    else:
-        st.markdown("### 📊 Historique des commandes")
-    
+    # --- Récupération des commandes ---
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes 
+                ORDER BY date DESC
+            """)
         else:
             conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-
-        # DEBUG: AJOUTEZ CES LIGNES ICI
-        st.write("🔍 **DIAGNOSTIC BASE DE DONNÉES**")
-        try:
-            if USE_POSTGRESQL:
-                cursor.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'commandes'
-                    ORDER BY ordinal_position
-                """)
-            else:
-                cursor.execute("PRAGMA table_info(commandes)")
-            
-            colonnes = cursor.fetchall()
-            st.write(f"🔍 **COLONNES DISPONIBLES:** {[col[0] for col in colonnes]}")
-            
-        except Exception as debug_e:
-            st.error(f"Debug error: {debug_e}")
-        
-        # Maintenant essayez une requête simple
-        cursor.execute("SELECT * FROM commandes LIMIT 1")
-        
-        commandes = cursor.fetchall()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, date, contremaître, equipe, articles_json, total_prix
+                FROM commandes 
+                ORDER BY date DESC
+            """)
+        orders = cursor.fetchall()
         conn.close()
-
-        if not commandes:
-            st.info("📭 Aucune commande trouvée")
-            return
-
-        for commande in commandes:
-            commande_id, date, contremaitre, equipe, articles_json, total_prix, commentaire = commande
-            
-            if user_info.get('role') == 'admin':
-                col1, col2 = st.columns([4, 1])
-            else:
-                col1 = st.container()
-                col2 = None
-            
-            with col1:
-                with st.expander(f"🛡️ Commande #{commande_id} - {contremaitre} ({equipe}) - {total_prix:.2f}€"):
-                    col_info1, col_info2 = st.columns(2)
-            
-                    with col_info1:
-                        st.markdown(f"**📅 Date:** {date}")
-                        st.markdown(f"**👨‍💼 Contremaître:** {contremaitre}")
-                        st.markdown(f"**👷‍♂️ Équipe:** {equipe}")
-                    
-                    with col_info2:
-                        st.markdown(f"**💰 Total:** {total_prix:.2f}€")
-                        st.markdown(f"**📦 Nb articles:** {len(json.loads(articles_json))}")
-                    
-                    if articles_json:
-                        st.markdown("**Articles commandés:**")
-                        # AFFICHAGE SIMPLE DES NOMS D'ARTICLES
-                        try:
-                            articles_list = json.loads(articles_json)
-                            st.write(f"**Nombre d'articles:** {len(articles_list)}")
-                            
-                            for article in articles_list:
-                                if isinstance(article, dict) and 'Nom' in article:
-                                    st.write(f"• {article['Nom']}")
-                                elif isinstance(article, dict):
-                                    # Si pas de 'Nom', essayer d'autres clés
-                                    nom = article.get('nom', article.get('name', 'Article sans nom'))
-                                    st.write(f"• {nom}")
-                                else:
-                                    st.write(f"• {str(article)}")
-                                
-                        except Exception as e:
-                            st.write(f"**Erreur affichage articles:** {e}")
-                    else:
-                        st.write("📭 Aucun article dans cette commande")
-            
-            if user_info.get('role') == 'admin' and col2:
-                with col2:
-                    st.write("")
-                    if st.button(f"🗑️ Supprimer", key=f"delete_{commande_id}", type="secondary"):
-                        st.session_state[f"confirm_delete_{commande_id}"] = True
-                        st.rerun()
-                    
-                    if st.session_state.get(f"confirm_delete_{commande_id}", False):
-                        st.warning("⚠️ Confirmer ?")
-                        col_yes, col_no = st.columns(2)
-                        with col_yes:
-                            if st.button("✅ Oui", key=f"confirm_yes_{commande_id}"):
-                                if delete_commande(commande_id):
-                                    st.success("✅ Supprimée")
-                                    st.session_state[f"confirm_delete_{commande_id}"] = False
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Erreur")
-                        with col_no:
-                            if st.button("❌ Non", key=f"confirm_no_{commande_id}"):
-                                st.session_state[f"confirm_delete_{commande_id}"] = False
-                                st.rerun()
         
+        if not orders:
+            st.info("Aucune commande dans l'historique")
+            return
+        
+        for order in orders:
+            order_id, date, contremaitre, equipe, articles_json, total_prix = order
+            with st.expander(f"🛒 Commande #{order_id} - {contremaitre} ({equipe}) - {total_prix}€", expanded=False):
+                st.write(f"📅 **Date:** {date}")
+                st.write(f"👤 **Contremaître:** {contremaitre}")
+                st.write(f"👷‍♂️ **Équipe:** {equipe}")
+                st.write(f"💰 **Total:** {total_prix}€")
+                st.markdown("#### 📦 Articles commandés:")
+                try:
+                    articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
+                    if not isinstance(articles, list):
+                        articles = [articles]
+                    for article in articles:
+                        if isinstance(article, dict) and 'Nom' in article:
+                            st.write(f"• {article['Nom']}")
+                        elif isinstance(article, dict):
+                            nom = article.get('nom', article.get('name', 'Article sans nom'))
+                            st.write(f"• {nom}")
+                        else:
+                            st.write(f"• {str(article)}")
+                except Exception as e:
+                    st.error(f"❌ Erreur affichage articles: {e}")
     except Exception as e:
         st.error(f"Erreur chargement historique: {e}")
 
@@ -2112,90 +2014,35 @@ def delete_commande(commande_id):
         return False
 
 def render_navigation():
-    """Navigation principale avec différenciation selon le rôle et permissions"""
     user_info = st.session_state.get('current_user', {})
-    user_role = user_info.get('role', 'user')
-    
-    if user_role == 'admin':
-        # Navigation complète pour admin
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-        
-        with col1:
-            if st.button("🛡️ Catalogue", use_container_width=True):
-                st.session_state.page = "catalogue"
-                st.rerun()
-        
-        with col2:
-            if st.button("🛒 Panier", use_container_width=True):
-                st.session_state.page = "cart"
-                st.rerun()
-        
-        with col3:
-            if st.button("📊 Historique", use_container_width=True):
-                st.session_state.page = "historique"
-                st.rerun()
-        
-        with col4:
-            if st.button("📈 Statistiques", use_container_width=True):
-                st.session_state.page = "stats"
-                st.rerun()
-        
-        with col5:
-            if st.button("🛠️ Articles", use_container_width=True):
-                st.session_state.page = "admin_articles"
-                st.rerun()
-        
-        with col6:
-            if st.button("👥 Utilisateurs", use_container_width=True):
-                st.session_state.page = "admin_users"
-                st.rerun()
-        
-        with col7:
-            if st.button("🚪 Déconnexion", use_container_width=True):
-                st.session_state.authenticated = False
-                st.session_state.current_user = {}
-                st.session_state.page = "login"
-                st.rerun()
-    
-    else:
-        # Navigation pour contremaîtres selon leurs permissions
-        buttons = []
-        
-        # Boutons de base
-        buttons.extend([
-            ("🛡️ Catalogue", "catalogue"),
-            ("🛒 Panier", "cart"),
-            ("📊 Mes commandes", "mes_commandes")
-        ])
-        
-        # Boutons selon permissions
-        if user_can_view_all_orders():
-            buttons.append(("📋 Historique", "historique"))
-        
-        if user_can_view_stats():
-            buttons.append(("📈 Statistiques", "stats"))
-        
-        if user_can_add_articles():
-            buttons.append(("➕ Articles", "admin_articles"))
-        
-        # Bouton déconnexion
-        buttons.append(("🚪 Déconnexion", "logout"))
-        
-        # Créer les colonnes dynamiquement
-        cols = st.columns(len(buttons))
-        
-        for i, (label, page) in enumerate(buttons):
-            with cols[i]:
-                if page == "logout":
-                    if st.button(label, use_container_width=True):
-                        st.session_state.authenticated = False
-                        st.session_state.current_user = {}
-                        st.session_state.page = "login"
-                        st.rerun()
-                else:
-                    if st.button(label, use_container_width=True):
-                        st.session_state.page = page
-                        st.rerun()
+    buttons = [
+        ("🛡️ Catalogue", "catalogue"),
+        ("🛒 Panier", "cart"),
+        ("📊 Mes commandes", "mes_commandes")
+    ]
+    if user_info.get("can_view_all_orders"):
+        buttons.append(("📋 Historique", "historique"))
+    if user_info.get("can_view_stats"):
+        buttons.append(("📈 Statistiques", "stats"))
+    if user_info.get("can_add_articles"):
+        buttons.append(("➕ Articles", "admin_articles"))
+    if user_info.get("role") == "admin":
+        buttons.append(("👥 Utilisateurs", "admin_users"))
+    buttons.append(("🚪 Déconnexion", "logout"))
+    cols = st.columns(len(buttons))
+    for i, (label, page) in enumerate(buttons):
+        with cols[i]:
+            if page == "logout":
+                if st.button(label, use_container_width=True):
+                    st.session_state.authenticated = False
+                    st.session_state.current_user = {}
+                    st.session_state.cart = []
+                    st.session_state.page = "login"
+                    st.rerun()
+            else:
+                if st.button(label, use_container_width=True):
+                    st.session_state.page = page
+                    st.rerun()
 
 def main():
     """Fonction principale de l'application"""
@@ -2216,6 +2063,9 @@ def main():
         else:
             show_login()
     else:
+        # IMPORTANT: Rafraîchir les permissions à chaque chargement de page
+        refresh_current_user_permissions()
+        
         # Interface utilisateur connecté
         render_navigation()
         
@@ -2229,25 +2079,46 @@ def main():
         elif page == "validation":
             show_validation()
         elif page == "historique":
-            show_orders_history()  # Utilisez celle-ci au lieu de show_historique()
+            if (st.session_state.current_user or {}).get("can_view_all_orders"):
+                show_historique()
+            else:
+                st.warning("⛔ Accès réservé.")
         elif page == "stats":
-            if has_perm(get_current_user(), PERM_VIEW_STATS):
-                show_stats()                     # ← appel de la bonne fonction
+            if (st.session_state.current_user or {}).get("can_view_stats"):
+                show_stats()
             else:
                 st.warning("⛔ Accès réservé.")
         elif page == "mes_commandes":
             show_mes_commandes()
         elif page == "admin_articles":
-            show_admin_articles()
-        elif page == "admin_users":
-            show_admin_page()  # (au lieu de show_admin_users)
-        elif page == "👤 Utilisateurs":
-            if get_current_user() and get_current_user()["role"] == "admin":
-                show_user_admin_page()
+            if (st.session_state.current_user or {}).get("can_add_articles"):
+                show_admin_articles()
             else:
-                st.warning("⛔ Réservé à l'administrateur.")
+                st.warning("⛔ Accès réservé.")
+        elif page == "admin_users":
+            if st.session_state.get('current_user', {}).get('role') == 'admin':
+                show_admin_page()
+            else:
+                st.warning("⛔ Accès réservé.")
         else:
             show_catalogue()
+
+    # En haut de main() ou dans render_navigation()
+    if 'sidebar_open' not in st.session_state:
+        st.session_state.sidebar_open = True
+
+    # Bouton pour réduire/afficher la sidebar (affiché en haut de la page)
+    if st.button("⬅️ Réduire la barre latérale" if st.session_state.sidebar_open else "➡️ Afficher la barre latérale"):
+        st.session_state.sidebar_open = not st.session_state.sidebar_open
+        st.rerun()
+
+    # Afficher la sidebar UNIQUEMENT si l'utilisateur est authentifié
+    if st.session_state.get('authenticated', False):
+        with st.sidebar:
+            if st.session_state.sidebar_open:
+                show_cart_sidebar()  # ou ton contenu habituel
+            else:
+                st.write("🔽 Barre latérale réduite")
 
 def show_main_app():
     """Interface principale de l'application"""
@@ -2283,6 +2154,9 @@ def show_main_app():
         st.info(random.choice(messages_deconnexion))
         time.sleep(1)
         st.session_state.clear()
+        st.session_state.authenticated = False
+        st.session_state.current_user = {}
+        st.session_state.cart = []  # <-- Ajoute cette ligne
         st.session_state.page = 'login'
         st.rerun()
     
@@ -2298,22 +2172,14 @@ def show_main_app():
         st.write(f"**Couleur préférée:** {user_info['couleur_preferee']}")
 
 def show_admin_articles():
-    """Page de gestion des articles pour l'administration"""
-    # AJOUTER CETTE LIGNE AU DÉBUT ✅
-    user_info = st.session_state.get('user', {})
-    
+    user_info = st.session_state.get('current_user') or {}
     st.markdown("### 🛠️ Gestion des articles - Administration")
-    
     tabs = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📤 Import CSV"])
-    
+
     with tabs[0]:   # 📑 Catalogue actuel
-        # Afficher le catalogue actuel (lecture seule pour contremaîtres)
         st.markdown("#### 📋 Articles actuels")
-        
-        # -----------------------  RECHERCHE  ----------------------------
         st.markdown("#### 🔍 Recherche dans le catalogue")
         query = st.text_input("Référence ou nom…")
-
         ref_col = get_ref_col(articles_df)
         df_affiche = articles_df
         if query:
@@ -2321,13 +2187,11 @@ def show_admin_articles():
                 articles_df["Nom"].str.contains(query, case=False, na=False)
                 | articles_df[ref_col].astype(str).str.contains(query)
             ]
-
         st.dataframe(df_affiche, use_container_width=True)
 
-        # --------------------  SUPPRESSION (admin/tech)  -----------------
-        if user_info.get("role") == "admin" or user_info.get("fonction", "").lower() == "technicien":
+        # --- Affichage du bouton suppression pour admin, gestionnaire, technicien ---
+        if user_info.get("role") == "admin" or user_info.get("fonction", "").lower() in ["technicien", "gestionnaire"]:
             st.markdown("#### 🗑️ Supprimer un article")
-
             if df_affiche.empty:
                 st.info("Aucun article correspondant.")
             else:
@@ -2335,70 +2199,16 @@ def show_admin_articles():
                     df_affiche[ref_col].astype(str) + " – " + df_affiche["Nom"]
                 ).tolist()
                 choix = st.selectbox("Choisissez l'article :", label_options)
-                ref_supp = choix.split(" – ")[0]        # on isole la référence
-
+                ref_supp = choix.split(" – ")[0]
                 if st.button("🗑️ Supprimer", type="secondary"):
                     ok, msg = delete_article(ref_supp, ref_col)
                     if ok:
                         st.success(msg)
-                        st.rerun()         # relance l'app sans perdre la session
+                        st.rerun()
                     else:
                         st.error(msg)
         else:
-            st.info("🔒 Suppression réservée aux administrateurs et techniciens.")
-    
-    with tabs[1]:
-        st.markdown("#### ➕ Ajouter un nouvel article")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            reference = st.text_input("📦 Référence*", placeholder="Ex: 40953")
-            nom = st.text_input("📝 Nom de l'article*", placeholder="Ex: Chaussure de sécurité")
-            prix = st.number_input("💰 Prix (€)*", min_value=0.0, step=0.01, format="%.2f")
-        
-        with col2:
-            # Sélection de catégorie existante ou création nouvelle
-            categories_existantes = articles_df['Description'].unique().tolist() if not articles_df.empty else []
-            
-            create_new_category = st.checkbox("📝 Créer une nouvelle catégorie")
-            
-            if create_new_category:
-                nouvelle_categorie = st.text_input("🆕 Nouvelle catégorie", placeholder="Ex: Chaussures de sécurité")
-                description = nouvelle_categorie
-            else:
-                description = st.selectbox("📝 Catégorie", ["Sélectionnez..."] + categories_existantes)
-                if description == "Sélectionnez...":
-                    description = st.text_input("📝 Description (optionnel)", placeholder="Ex: Chaussures")
-            
-            unite = st.text_input("📏 Unité", value="Par unité", placeholder="Ex: Par paire, Par veste...")
-        
-        if st.button("📝 Ajouter l'article", use_container_width=True):
-            if all([reference, nom, prix > 0]):
-                # CORRECTION ICI ✅
-                success, message = add_article_to_csv(reference, nom, description or "", prix, unite or "Par unité")
-                
-                if success:
-                    st.success(f"✅ {message}")
-                    # 🔄 Ré-actualiser uniquement les données en cache
-                    st.cache_data.clear()     # invalide les @st.cache_data
-                    st.rerun()   # relance l'app sans perdre la session
-                else:
-                    st.error(f"❌ {message}")
-            else:
-                st.error("❌ Veuillez remplir au minimum la référence, le nom et le prix")
-    
-    # Onglet import seulement pour admin - CORRIGER CETTE LIGNE AUSSI
-    with tabs[2]:
-        # Import CSV pour admin seulement
-        if user_info.get('role') == 'admin':
-            st.markdown("#### 📤 Import CSV")
-            uploaded_file = st.file_uploader("Choisir un fichier CSV", type=['csv'])
-            if uploaded_file is not None:
-                # Code d'import...
-                pass
-        else:
-            st.info("🔒 Fonctionnalité réservée aux administrateurs")
+            st.info("🔒 Suppression réservée aux administrateurs, gestionnaires et techniciens.")
 
 def add_article_to_csv(reference: str,
                        nom: str,
@@ -2461,43 +2271,24 @@ def import_articles_from_csv(new_articles_df):
         return False
 
 def show_admin_users():
-    """Page admin avec création ET suppression d'utilisateurs"""
     st.markdown("# 👥 Gestion des utilisateurs - Administration")
-    
-    # Deux colonnes : Créer | Supprimer
+    users = get_all_users()
+    current_user = st.session_state.get("current_user", {})
+    is_admin = current_user.get("role") == "admin"
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.markdown("### ➕ Créer un nouvel utilisateur")
-        # ... ton code existant pour créer des utilisateurs ...
-    
-    with col2:
-        st.markdown("### 🗑️ Supprimer un utilisateur")
-        
-        # Liste déroulante des utilisateurs
-        users = get_all_users()
-        if users:
-            user_options = {f"{user[1]} ({user[3]})": user[0] for user in users if user[1] != 'admin'}
-            
-            if user_options:
-                selected_user = st.selectbox("Choisir un utilisateur à supprimer:", 
-                                           options=list(user_options.keys()))
-                
-                if st.button("🗑️ Supprimer cet utilisateur", type="secondary"):
-                    user_id = user_options[selected_user]
-                    success, message = delete_user(user_id)
-                    if success:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
-            else:
-                st.info("Aucun utilisateur supprimable")
-        else:
-            st.info("Aucun utilisateur trouvé")
-    
-    # Liste des utilisateurs en dessous
-    show_user_management()
+        # ... création ...
+
+    if is_admin:
+        with col2:
+            st.markdown("### 🗑️ Supprimer un utilisateur")
+            # ... suppression ...
+    else:
+        with col2:
+            st.info("Seul l'administrateur peut supprimer des utilisateurs.")
 
 def show_user_management():
     """Interface améliorée de gestion des utilisateurs - AVEC SUPPRESSION"""
@@ -2516,8 +2307,32 @@ def show_user_management():
         
         for user in users:
             user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
-            
+            # Récupérer le montant total des commandes de cet utilisateur
+            total_montant = 0
+            nb_cmds = 0
+            try:
+                if USE_POSTGRESQL:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT SUM(total_prix), COUNT(*) FROM commandes WHERE contremaître = %s", (username,))
+                else:
+                    conn = sqlite3.connect(DATABASE_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT SUM(total_prix), COUNT(*) FROM commandes WHERE contremaître = ?", (username,))
+                res = cursor.fetchone()
+                conn.close()
+                if res:
+                    total_montant = res[0] or 0
+                    nb_cmds = res[1] or 0
+            except Exception:
+                pass
             with st.expander(f"👤 {username} - {fonction} ({equipe})", expanded=False):
+                st.write(f"**ID:** {user_id}")
+                st.write(f"**Équipe:** {equipe}")
+                st.write(f"**Fonction:** {fonction}")
+                st.write(f"**Rôle:** {role}")
+                st.write(f"**Montant total commandes:** {total_montant:.2f} €  |  **Nb commandes:** {nb_cmds}")
+                
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
@@ -2551,6 +2366,11 @@ def show_user_management():
                             
                             if update_user_permissions(user_id, new_permissions):
                                 st.success("✅ Permissions mises à jour !")
+                                # PATCH : si l'utilisateur modifié est l'utilisateur courant, mets à jour la session
+                                current_user = st.session_state.get('current_user', {})
+                                if current_user and current_user.get("id") == user_id:
+                                    for k, v in new_permissions.items():
+                                        st.session_state.current_user[k] = v
                                 time.sleep(0.5)
                                 st.rerun()
                             else:
@@ -2590,26 +2410,38 @@ def show_user_management():
         st.error(f"Erreur chargement utilisateurs: {e}")
 
 def get_all_users():
-    """Retourne toutes les infos utilisateurs (toujours 8 colonnes)"""
+    """Récupère tous les utilisateurs"""
     try:
-        ensure_users_table()
-
-        conn   = sqlite3.connect('users.db')
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT  id, username,
-                    COALESCE(equipe, ''), COALESCE(fonction, ''),
-                    COALESCE(can_add_articles, 0),
-                    COALESCE(can_view_stats, 0),
-                    COALESCE(can_view_all_orders, 0),
-                    COALESCE(role, 'user')
-            FROM users
-        """)
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, username, equipe, fonction, 
+                       COALESCE(can_add_articles, false), 
+                       COALESCE(can_view_stats, false), 
+                       COALESCE(can_view_all_orders, false), 
+                       role 
+                FROM users
+            """)
+            users = cursor.fetchall()
+            conn.close()
+            return users
+        else:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, username, equipe, fonction, 
+                       COALESCE(can_add_articles, 0), 
+                       COALESCE(can_view_stats, 0), 
+                       COALESCE(can_view_all_orders, 0), 
+                       role 
+                FROM users
+            """)
+            users = cursor.fetchall()
+            conn.close()
+            return users
     except Exception as e:
-        st.error(f"Erreur chargement utilisateurs : {e}")
+        st.error(f"Erreur chargement utilisateurs: {e}")
         return []
 
 def send_password_reset_email(email, new_password):
@@ -2877,11 +2709,14 @@ def show_catalogue():
     with st.sidebar:
         show_cart_sidebar()
     
-    categories = articles_df['Description'].unique()
+    categories = [
+        "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
+        "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
+        "Oxycoupage", "Outil", "Lampe", "Marquage"
+    ]
     
     if not st.session_state.get('selected_category'):
         st.markdown("### 📋 Sélectionnez une catégorie")
-        
         cols = st.columns(3)
         for i, category in enumerate(categories):
             with cols[i % 3]:
@@ -2892,13 +2727,10 @@ def show_catalogue():
     else:
         category = st.session_state.selected_category
         emoji = get_category_emoji(category)
-        
         if st.button("← Retour aux catégories"):
             st.session_state.selected_category = None
             st.rerun()
-        
         st.markdown(f"#### {emoji} {category}")
-        
         articles_category = articles_df[articles_df['Description'] == category]
         
         # Regrouper les articles par nom de base
@@ -3015,10 +2847,10 @@ def show_orders_history():
                         
                         # AFFICHAGE SIMPLE DES NOMS D'ARTICLES
                         try:
-                            articles_list = json.loads(articles_json)
-                            st.write(f"**Nombre d'articles:** {len(articles_list)}")
-                            
-                            for article in articles_list:
+                            articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
+                            if not isinstance(articles, list):
+                                articles = [articles]
+                            for article in articles:
                                 if isinstance(article, dict) and 'Nom' in article:
                                     st.write(f"• {article['Nom']}")
                                 elif isinstance(article, dict):
@@ -3028,8 +2860,10 @@ def show_orders_history():
                                 else:
                                     st.write(f"• {str(article)}")
                                 
+                        except json.JSONDecodeError:
+                            st.error("❌ Erreur de lecture des articles")
                         except Exception as e:
-                            st.write(f"**Erreur affichage articles:** {e}")
+                            st.error(f"❌ Erreur affichage articles: {e}")
                     
                     with col2:
                         if st.button(f"🗑️ Supprimer", key=f"delete_order_{order_id}"):
@@ -3275,32 +3109,10 @@ def get_user_email(username):
         return None
 
 def delete_user(user_id):
-    """Supprime un utilisateur de la base de données"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-        else:
-            conn = sqlite3.connect('users.db')
-        
-        cursor = conn.cursor()
-        
-        # Vérifier que ce n'est pas l'admin principal
-        cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
-        
-        if user and user[0] == 'admin':
-            return False, "Impossible de supprimer l'administrateur principal"
-        
-        # Supprimer l'utilisateur
-        cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return True, "Utilisateur supprimé avec succès"
-        
-    except Exception as e:
-        return False, f"Erreur suppression: {e}"
+    current_user = st.session_state.get("current_user", {})
+    if current_user.get("role") != "admin":
+        return False, "Action réservée à l'administrateur."
+    # ... suppression réelle ...
 
 def user_can_add_articles():
     """Vérifie si l'utilisateur actuel peut ajouter des articles"""
@@ -3446,51 +3258,72 @@ def update_user_permissions(user_id, permissions):
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
 
-def create_user(username: str, password: str,
-                equipe: str, fonction: str,
-                couleur_preferee: str = "DT770") -> tuple[bool, str]:
-    """
-    Enregistre un nouvel utilisateur via le formulaire « Inscription ».
-    Retourne (success, message).
-    Règles :
-      • rôle = 'user'
-      • permissions automatiques selon le poste
-    """
-    # règles simples : poste à responsabilité → toutes permissions
-    responsabilite = fonction.lower() in {"contremaître", "contremaitre", "rtz"}
-    can_add_articles     = 1
-    can_view_stats       = 1 if responsabilite else 0
-    can_view_all_orders  = 1 if responsabilite else 0
-
-    ok = create_new_user(
-        username=username,
-        password=password,
-        equipe=equipe,
-        fonction=fonction,
-        can_add_articles=can_add_articles,
-        can_view_stats=can_view_stats,
-        can_view_all_orders=can_view_all_orders,
-        role="user"
-    )
-    if ok:
+def create_user(username, password, equipe, fonction, couleur_preferee="DT770", can_add_articles=0, can_view_stats=0, can_view_all_orders=0, role="user"):
+    try:
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, equipe, fonction,
+                 role, can_add_articles, can_view_stats, can_view_all_orders)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    username,
+                    pwd_hash,
+                    equipe,
+                    fonction,
+                    role,
+                    bool(can_add_articles),
+                    bool(can_view_stats),
+                    bool(can_view_all_orders),
+                ),
+            )
+        else:
+            conn = sqlite3.connect("users.db")
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, equipe, fonction,
+                 role, can_add_articles, can_view_stats, can_view_all_orders)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    username,
+                    pwd_hash,
+                    equipe,
+                    fonction,
+                    role,
+                    int(can_add_articles),
+                    int(can_view_stats),
+                    int(can_view_all_orders),
+                ),
+            )
+        conn.commit()
+        conn.close()
         return True, "✅ Utilisateur créé avec succès !"
-    return False, "❌ Impossible de créer l'utilisateur."
+    except Exception as e:
+        st.error(f"❌ Erreur création utilisateur : {e}")
+        return False, f"❌ Erreur création utilisateur : {e}"
 
 def get_category_emoji(category):
-    """Retourne l'emoji correspondant à chaque catégorie"""
     emoji_map = {
         'Chaussures': '👟',
-        'Veste Blouson': '🧥', 
-        'Sous Veste': '👕',
-        'Veste Oxycoupeur': '🔥',
-        'Sécurité': '🦺',
+        'Veste Blouson': '🧥',
         'Gants': '🧤',
-        'Pantalon': '👖',
         'Casque': '⛑️',
-        'Protection': '🛡️',
         'Lunette': '🥽',
+        'Gilet': '🦺',
+        'Masque': '😷',
+        'Veste Oxycoupeur': '🔥',
+        'Sécurité': '🛡️',
+        'Pantalon': '👖',
+        'Sous Veste': '👕',
+        'Protection': '🦺',
         'Oxycoupage': '🔧',
-        'Outil': '🔨',
+        'Outil': '🛠️',
         'Lampe': '💡',
         'Marquage': '✏️'
     }
@@ -3638,34 +3471,45 @@ def show_admin_page():
             with st.form("create_user_form"):
                 username = st.text_input("👤 Nom d'utilisateur*")
                 password = st.text_input("🔐 Mot de passe*", type="password")
-                equipe = st.selectbox(
-                    "👥 Équipe*",
-                    ["para", "flux", "finissage"],
-                    index=0
-                )
-                fonction = st.selectbox(
-                    "💼 Fonction*",
-                    ["contremaitre", "RTZ", "technicien"],
-                    index=0
-                )
-                
-                st.markdown("### 🔐 Permissions")
-                can_add_articles = st.checkbox("📝 Peut ajouter des articles")
-                can_view_stats = st.checkbox("📊 Peut voir les statistiques") 
-                can_view_all_orders = st.checkbox("📋 Peut voir toutes les commandes")
+                equipe = st.selectbox("👥 Équipe*", EQUIPES, index=0)
+                fonction = st.selectbox("💼 Fonction*", ["contremaitre", "RTZ", "technicien", "chef d'équipe", "responsable sécurité", "autre"], index=0)
+
+                # Logique automatique de permissions selon la fonction
+                if fonction.lower() in ["contremaître", "contremaitre", "rtz", "gestionnaire"]:
+                    default_add = True
+                    default_stats = True
+                    default_all = True
+                elif fonction.lower() in ["chef d'équipe", "responsable sécurité"]:
+                    default_add = False
+                    default_stats = True
+                    default_all = False
+                else:
+                    default_add = False
+                    default_stats = False
+                    default_all = False
+
+                st.markdown("### 🔐 Permissions (automatiques selon la fonction)")
+                can_add_articles = st.checkbox("📝 Peut ajouter des articles", value=default_add, key="add_perm")
+                can_view_stats = st.checkbox("📊 Peut voir les statistiques", value=default_stats, key="stats_perm")
+                can_view_all_orders = st.checkbox("📋 Peut voir toutes les commandes", value=default_all, key="all_perm")
                 
                 role = st.selectbox("🎭 Rôle:", ["user", "admin"])
                 
                 if st.form_submit_button("✅ Créer l'utilisateur", use_container_width=True):
                     if username and password and equipe and fonction:
-                        success = create_new_user(username, password, equipe, fonction, 
-                                                can_add_articles, can_view_stats, 
-                                                can_view_all_orders, role)
+                        if user_exists(username):
+                            st.error("Ce nom d'utilisateur existe déjà.")
+                        else:
+                            c_add = int(can_add_articles)
+                            c_stats = int(can_view_stats)
+                            c_all = int(can_view_all_orders)
+                            equipe_up = equipe.upper()
+                            success, msg = create_user(username, password, equipe_up, fonction, "DT770", c_add, c_stats, c_all, role)
                         if success:
                             st.success(f"✅ Utilisateur {username} créé !")
                             st.rerun()
                         else:
-                            st.error("❌ Erreur création utilisateur")
+                            st.error(msg)
                     else:
                         st.error("❌ Veuillez remplir tous les champs obligatoires")
     
@@ -3673,30 +3517,20 @@ def show_admin_page():
     with col2:
         with st.expander("🗑️ Supprimer un utilisateur", expanded=True):
             users = get_all_users()
-            
             if users:
-                # Filtrer les utilisateurs (pas l'admin)
-                user_options = {}
                 for user in users:
-                    if user[1] != 'admin':  # user[1] = username
-                        user_options[f"{user[1]} ({user[2]})"] = user[0]  # nom(équipe) -> id
-                
-                if user_options:
-                    selected_user = st.selectbox("Choisir un utilisateur à supprimer:", 
-                                               options=list(user_options.keys()))
-                    
-                    if st.button("🗑️ Supprimer cet utilisateur", 
-                               type="secondary", 
-                               use_container_width=True):
-                        user_id = user_options[selected_user]
+                    user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
+                    if username == 'admin':
+                        continue  # Ne pas supprimer l'admin principal
+                    st.markdown(f"**{username}** ({equipe}, {fonction}, rôle: {role})")
+                    if st.button(f"🗑️ Supprimer {username}", key=f"delete_user_{user_id}", use_container_width=True):
                         success, message = delete_user(user_id)
                         if success:
                             st.success(message)
                             st.rerun()
                         else:
                             st.error(message)
-                else:
-                    st.info("Aucun utilisateur supprimable")
+                    st.divider()
             else:
                 st.info("Aucun utilisateur trouvé")
     
@@ -3925,7 +3759,7 @@ def parse_article_for_display(raw) -> Tuple[str, Optional[float]]:
 
 # helper pour récupérer l'utilisateur courant (facilement ré-utilisable)
 def get_current_user():
-    return st.session_state.get("current_user")
+    return st.session_state.get("current_user") or {}
 
 # ─── constants de permission (clé bool en BDD / session) ──────────
 PERM_ADD_ARTICLES     = "can_add_articles"
@@ -4044,9 +3878,22 @@ def show_user_admin_page() -> None:
                     key=f"save_{uid}",
                     use_container_width=True,
                 ):
-                    update_user_permissions(uid, e_role, e_add, e_stats, e_all)
-                    st.success("Mis à jour.")
-                    st.rerun()
+                    permissions = {
+                        'can_add_articles': int(e_add),
+                        'can_view_stats': int(e_stats),
+                        'can_view_all_orders': int(e_all)
+                    }
+                    ok = update_user_permissions(uid, permissions)
+                    if ok:
+                        # PATCH : si l'utilisateur modifie ses propres droits, on met à jour la session
+                        if 'current_user' in st.session_state and st.session_state.current_user.get('id') == uid:
+                            st.session_state.current_user['can_add_articles'] = bool(permissions['can_add_articles'])
+                            st.session_state.current_user['can_view_stats'] = bool(permissions['can_view_stats'])
+                            st.session_state.current_user['can_view_all_orders'] = bool(permissions['can_view_all_orders'])
+                        st.success("✅ Permissions mises à jour !")
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de la mise à jour")
 
             with b_del:
                 if st.button(
@@ -4058,5 +3905,73 @@ def show_user_admin_page() -> None:
                     st.warning("Utilisateur supprimé.")
                     st.rerun()
 
+st.markdown(
+    """
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    """,
+    unsafe_allow_html=True
+)
+
+# --- Liste globale des équipes ---
+EQUIPES = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", "FINISSAGE"]
+
+# --- Fonction pour vérifier l'existence d'un utilisateur (insensible à la casse) ---
+def user_exists(username):
+    if USE_POSTGRESQL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE LOWER(username) = %s", (username.lower(),))
+        exists = cursor.fetchone() is not None
+        conn.close()
+    else:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE LOWER(username) = ?", (username.lower(),))
+        exists = cursor.fetchone() is not None
+        conn.close()
+    return exists
+
+def to_bool(val):
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val == 1
+    if isinstance(val, str):
+        return val == "1"
+    return False
+
+def refresh_current_user_permissions():
+    """Recharge les permissions de l'utilisateur courant depuis la base."""
+    user_info = st.session_state.get('current_user', {})
+    username = user_info.get('username')
+    if not username:
+        return
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT role, can_add_articles, can_view_stats, can_view_all_orders
+                FROM users WHERE username = %s
+            """, (username,))
+        else:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT role, can_add_articles, can_view_stats, can_view_all_orders
+                FROM users WHERE username = ?
+            """, (username,))
+        result = cursor.fetchone()
+        conn.close()
+        if result:
+            st.session_state.current_user['role'] = result[0]
+            st.session_state.current_user['can_add_articles'] = to_bool(result[1])
+            st.session_state.current_user['can_view_stats'] = to_bool(result[2])
+            st.session_state.current_user['can_view_all_orders'] = to_bool(result[3])
+    except Exception as e:
+        st.error(f"Erreur rafraîchissement permissions : {e}")
+
 if __name__ == "__main__":
     main()
+
+show_admin_users()
