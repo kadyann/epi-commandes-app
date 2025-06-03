@@ -2274,14 +2274,11 @@ def show_admin_users():
     st.markdown("# 👥 Gestion des utilisateurs - Administration")
     users = get_all_users()
     current_user = st.session_state.get("current_user", {})
-    is_admin = current_user.get("role") == "admin"
-
+    is_admin = (current_user or {}).get("role") == "admin"
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown("### ➕ Créer un nouvel utilisateur")
         # ... création ...
-
     if is_admin:
         with col2:
             st.markdown("### 🗑️ Supprimer un utilisateur")
