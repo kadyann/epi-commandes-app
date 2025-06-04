@@ -3743,8 +3743,16 @@ def show_user_admin_page() -> None:
         with col1:
             new_username = st.text_input("Nom d'utilisateur*", key="new_username")
             new_password = st.text_input("Mot de passe*", type="password", key="new_password")
-            new_equipe   = st.text_input("Équipe", value="PARA", key="new_equipe")
-            new_fonction = st.text_input("Fonction", value="contremaître", key="new_fonction")
+            # Menu déroulant pour l'équipe
+            equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", "AUTRE"]
+            new_equipe = st.selectbox("Équipe", equipes, key="new_equipe_select")
+            if new_equipe == "AUTRE":
+                new_equipe = st.text_input("Précisez l'équipe", key="new_equipe_autre")
+            # Menu déroulant pour la fonction
+            fonctions = ["contremaître", "RTZ", "technicien", "opérateur", "gestionnaire", "AUTRE"]
+            new_fonction = st.selectbox("Fonction", fonctions, key="new_fonction_select")
+            if new_fonction == "AUTRE":
+                new_fonction = st.text_input("Précisez la fonction", key="new_fonction_autre")
         with col2:
             st.markdown("### Permissions")
             p_add   = st.checkbox("Peut ajouter des articles", key="p_add")
