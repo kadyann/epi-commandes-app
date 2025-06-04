@@ -3734,7 +3734,7 @@ def show_user_admin_page() -> None:
     st.write("---")
 
     # ------ FORMULAIRE DE CRÉATION ---------------------------------
-    with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
+    with st.expander("➕ Créer un nouvel utilisateur", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
             new_username = st.text_input("Nom d'utilisateur*", key="new_username")
@@ -3751,6 +3751,7 @@ def show_user_admin_page() -> None:
             if not new_username or not new_password:
                 st.error("Veuillez remplir tous les champs obligatoires.")
             else:
+                st.info("Tentative de création...")  # DEBUG
                 ok, msg = create_user(
                     new_username,
                     new_password,
