@@ -3534,6 +3534,8 @@ def show_admin_page():
     # === LISTE DES UTILISATEURS ===
     st.markdown("---")
     show_user_management()
+    users = get_all_users()
+    st.write("DEBUG users:", users)  # <--- AJOUTE CETTE LIGNE
 
 def create_new_user(username, password, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role):
     """Crée un nouvel utilisateur avec toutes les permissions"""
