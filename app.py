@@ -3458,84 +3458,8 @@ def get_all_users():
 def show_admin_page():
     """Page complète d'administration des utilisateurs"""
     st.markdown("# 👥 Gestion des utilisateurs - Administration")
-    
-    # Deux colonnes principales
-    col1, col2 = st.columns(2)
-    
-    # === CRÉATION D'UTILISATEUR ===
-    with col1:
-        with st.expander("➕ Créer un nouvel utilisateur", expanded=True):
-            with st.form("create_user_form"):
-                username = st.text_input("👤 Nom d'utilisateur*")
-                password = st.text_input("🔐 Mot de passe*", type="password")
-                equipe = st.selectbox("👥 Équipe*", EQUIPES, index=0)
-                fonction = st.selectbox("💼 Fonction*", ["contremaitre", "RTZ", "technicien", "chef d'équipe", "responsable sécurité", "autre"], index=0)
-
-                # Logique automatique de permissions selon la fonction
-                if fonction.lower() in ["contremaître", "contremaitre", "rtz", "gestionnaire"]:
-                    default_add = True
-                    default_stats = True
-                    default_all = True
-                elif fonction.lower() in ["chef d'équipe", "responsable sécurité"]:
-                    default_add = False
-                    default_stats = True
-                    default_all = False
-                else:
-                    default_add = False
-                    default_stats = False
-                    default_all = False
-
-                st.markdown("### 🔐 Permissions (automatiques selon la fonction)")
-                can_add_articles = st.checkbox("📝 Peut ajouter des articles", value=default_add, key="add_perm")
-                can_view_stats = st.checkbox("📊 Peut voir les statistiques", value=default_stats, key="stats_perm")
-                can_view_all_orders = st.checkbox("📋 Peut voir toutes les commandes", value=default_all, key="all_perm")
-                
-                role = st.selectbox("🎭 Rôle:", ["user", "admin"])
-                
-                if st.form_submit_button("✅ Créer l'utilisateur", use_container_width=True):
-                    if username and password and equipe and fonction:
-                        if user_exists(username):
-                            st.error("Ce nom d'utilisateur existe déjà.")
-                        else:
-                            c_add = int(can_add_articles)
-                            c_stats = int(can_view_stats)
-                            c_all = int(can_view_all_orders)
-                            equipe_up = equipe.upper()
-                            success, msg = create_user(username, password, equipe_up, fonction, "DT770", c_add, c_stats, c_all, role)
-                        if success:
-                            st.success(f"✅ Utilisateur {username} créé !")
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    else:
-                        st.error("❌ Veuillez remplir tous les champs obligatoires")
-    
-    # === SUPPRESSION D'UTILISATEUR ===
-    with col2:
-        with st.expander("🗑️ Supprimer un utilisateur", expanded=True):
-            users = get_all_users()
-            if users:
-                for user in users:
-                    user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
-                    if username == 'admin':
-                        continue  # Ne pas supprimer l'admin principal
-                    st.markdown(f"**{username}** ({equipe}, {fonction}, rôle: {role})")
-                    if st.button(f"🗑️ Supprimer {username}", key=f"delete_user_{user_id}", use_container_width=True):
-                        success, message = delete_user(user_id)
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
-                    st.divider()
-            else:
-                st.info("Aucun utilisateur trouvé")
-    
-    # === LISTE DES UTILISATEURS ===
-    st.markdown("---")
-    show_user_management()
-    users = get_all_users()
-    st.write("DEBUG users:", users)  # <--- AJOUTE CETTE LIGNE
+    st.info(f"DATABASE_URL utilisée : `{os.environ.get('DATABASE_URL', 'Aucune (mode SQLite local)' )}`")
+    # ... le reste de ta fonction ...
 
 def create_new_user(username, password, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role):
     """Crée un nouvel utilisateur avec toutes les permissions"""
