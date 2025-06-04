@@ -762,12 +762,13 @@ def show_cart_sidebar():
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
             
-            # Correction clé unique
-            ref = article.get('N° Référence') or article.get('Référence') or i or id(article)
+            # Correction clé unique : combine index, référence ET id(article)
+            ref = article.get('N° Référence') or article.get('Référence') or "no_ref"
+            unique_id = f"{i}_{ref}_{id(article)}"
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
             
             with col_minus:
-                if st.button("➖", key=f"sidebar_minus_{i}_{ref}", help="Réduire quantité"):
+                if st.button("➖", key=f"sidebar_minus_{unique_id}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
             
@@ -775,12 +776,12 @@ def show_cart_sidebar():
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
             
             with col_plus:
-                if st.button("➕", key=f"sidebar_plus_{i}_{ref}", help="Augmenter quantité"):
+                if st.button("➕", key=f"sidebar_plus_{unique_id}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
             
             with col_del:
-                if st.button("🗑️", key=f"sidebar_delete_{i}_{ref}", help="Supprimer"):
+                if st.button("🗑️", key=f"sidebar_delete_{unique_id}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
             
@@ -3783,10 +3784,12 @@ def show_user_admin_page() -> None:
             st.write(f"Fonction : {fonction}")
             st.write("#### ✏️ Modifier")
 
+            role_options = ["user", "contremaitre", "admin"]
+            role_safe = role if role in role_options else "admin"
             e_role   = st.selectbox(
                 "Rôle",
-                ["user", "contremaitre", "admin"],
-                index=["user", "contremaitre", "admin"].index(role),
+                role_options,
+                index=role_options.index(role_safe),
                 key=f"role_{uid}",
             )
             c1, c2, c3 = st.columns(3)
