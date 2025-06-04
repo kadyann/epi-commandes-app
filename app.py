@@ -497,7 +497,7 @@ def init_users_db():
             else:
                 # Créer nouvel admin
                 cursor.execute("""
-                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
+                    INSERT INTO users (username, password_hash, role, equipe, fonction, couleur_preferee) 
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
         else:
@@ -514,7 +514,7 @@ def init_users_db():
             else:
                 # Créer nouvel admin
                 cursor.execute("""
-                    INSERT INTO users (username, password, role, equipe, fonction, couleur_preferee) 
+                    INSERT INTO users (username, password_hash, role, equipe, fonction, couleur_preferee) 
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
         
@@ -533,7 +533,7 @@ def authenticate_user(username, password):
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, username, password, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
+            SELECT id, username, password_hash, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
             FROM users WHERE username = %s
         """, (username,))
         row = cursor.fetchone()
@@ -584,7 +584,7 @@ def add_user(username, password, role='user', equipe='', fonction='', email=''):
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (username, password, role, equipe, fonction, email)
+                INSERT INTO users (username, password_hash, role, equipe, fonction, email)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (username, password_hash, role, equipe, fonction, email))
         else:
@@ -2548,9 +2548,9 @@ def reset_user_password(username, equipe, couleur_preferee):
         
         # Mettre à jour le mot de passe
         if USE_POSTGRESQL:
-            cursor.execute("UPDATE users SET password = %s WHERE username = %s", (password_hash, username))
+            cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s", (password_hash, username))
         else:
-            cursor.execute("UPDATE users SET password = ? WHERE username = ?", (password_hash, username))
+            cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?", (password_hash, username))
         
         conn.commit()
         conn.close()
