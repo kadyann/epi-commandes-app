@@ -762,13 +762,16 @@ def show_cart_sidebar():
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
             
-            # Correction clé unique : combine index, référence ET id(article)
-            ref = article.get('N° Référence') or article.get('Référence') or "no_ref"
-            unique_id = f"{i}_{ref}_{id(article)}"
+            # Clé vraiment unique : hash du nom, référence, i
+            ref = str(article.get('N° Référence') or article.get('Référence') or "no_ref")
+            nom = str(article.get('Nom') or "no_nom")
+            import hashlib
+            key_base = f"{nom}_{ref}_{i}"
+            key_hash = hashlib.md5(key_base.encode()).hexdigest()
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
             
             with col_minus:
-                if st.button("➖", key=f"sidebar_minus_{unique_id}", help="Réduire quantité"):
+                if st.button("➖", key=f"sidebar_minus_{key_hash}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
             
@@ -776,12 +779,12 @@ def show_cart_sidebar():
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
             
             with col_plus:
-                if st.button("➕", key=f"sidebar_plus_{unique_id}", help="Augmenter quantité"):
+                if st.button("➕", key=f"sidebar_plus_{key_hash}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
             
             with col_del:
-                if st.button("🗑️", key=f"sidebar_delete_{unique_id}", help="Supprimer"):
+                if st.button("🗑️", key=f"sidebar_delete_{key_hash}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
             
@@ -3752,32 +3755,35 @@ def show_user_admin_page() -> None:
             if not new_username or not new_password:
                 st.error("Veuillez remplir tous les champs obligatoires.")
             else:
-                st.info("Tentative de création...")  # DEBUG
-                ok, msg = create_user(
-                    new_username,
-                    new_password,
-                    new_equipe,
-                    new_fonction,
-                    can_add_articles=int(p_add),
-                    can_view_stats=int(p_stats),
-                    can_view_all_orders=int(p_all),
-                    role=role
-                )
-                (st.success if ok else st.error)(msg)
-                if ok:
-                    st.rerun()
+                # Vérifier unicité
+                if user_exists(new_username):
+                    st.error("❌ Ce nom d'utilisateur existe déjà.")
+                else:
+                    ok, msg = create_user(
+                        new_username,
+                        new_password,
+                        new_equipe,
+                        new_fonction,
+                        can_add_articles=int(p_add),
+                        can_view_stats=int(p_stats),
+                        can_view_all_orders=int(p_all),
+                        role=role
+                    )
+                    (st.success if ok else st.error)(msg)
+                    if ok:
+                        st.rerun()
 
     # ------ LISTE & ÉDITION ----------------------------------------
     st.markdown("### 📄 Utilisateurs existants")
     for (
         uid,
         uname,
-        role,
         equipe,
         fonction,
         p_add,
         p_stats,
         p_all,
+        role,
     ) in get_all_users():
         with st.expander(f"👤 {uname} – {role.upper()} ({equipe})", expanded=False):
             st.write(f"ID : {uid}")
@@ -3826,18 +3832,13 @@ def show_user_admin_page() -> None:
                     }
                     ok = update_user_permissions(uid, permissions)
                     if ok:
-                        # PATCH : si l'utilisateur modifie ses propres droits, on met à jour la session
-                        if 'current_user' in st.session_state and st.session_state.current_user.get('id') == uid:
-                            st.session_state.current_user['can_add_articles'] = bool(permissions['can_add_articles'])
-                            st.session_state.current_user['can_view_stats'] = bool(permissions['can_view_stats'])
-                            st.session_state.current_user['can_view_all_orders'] = bool(permissions['can_view_all_orders'])
                         st.success("✅ Permissions mises à jour !")
                         st.rerun()
                     else:
                         st.error("❌ Erreur lors de la mise à jour")
 
             with b_del:
-                if st.button(
+                if uname != "admin" and st.button(
                     f"🗑️ Supprimer {uname}",
                     key=f"del_{uid}",
                     use_container_width=True,
