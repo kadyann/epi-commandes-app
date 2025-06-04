@@ -762,10 +762,12 @@ def show_cart_sidebar():
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
             
+            # Correction clé unique
+            ref = article.get('N° Référence') or article.get('Référence') or i or id(article)
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
             
             with col_minus:
-                if st.button("➖", key=f"sidebar_minus_{i}_{article['Nom']}", help="Réduire quantité"):
+                if st.button("➖", key=f"sidebar_minus_{i}_{ref}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
             
@@ -773,12 +775,12 @@ def show_cart_sidebar():
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
             
             with col_plus:
-                if st.button("➕", key=f"sidebar_plus_{i}_{article['Nom']}", help="Augmenter quantité"):
+                if st.button("➕", key=f"sidebar_plus_{i}_{ref}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
             
             with col_del:
-                if st.button("🗑️", key=f"sidebar_delete_{i}_{article['Nom']}", help="Supprimer"):
+                if st.button("🗑️", key=f"sidebar_delete_{i}_{ref}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
             
@@ -3083,17 +3085,20 @@ def get_user_email(username):
         return None
 
 def delete_user(user_id):
-    """Supprime un utilisateur de la base de données"""
+    """Supprime un utilisateur de la base de données (sauf admin principal)"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
+            # Vérifier que ce n'est pas l'admin principal
             cursor.execute('SELECT username FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             if user and user[0] == 'admin':
                 conn.close()
                 return False, "Impossible de supprimer l'administrateur principal"
             cursor.execute('DELETE FROM users WHERE id = %s', (user_id,))
+            conn.commit()
+            conn.close()
         else:
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
@@ -3103,8 +3108,8 @@ def delete_user(user_id):
                 conn.close()
                 return False, "Impossible de supprimer l'administrateur principal"
             cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
         return True, "Utilisateur supprimé avec succès"
     except Exception as e:
         return False, f"Erreur suppression: {e}"
@@ -3731,34 +3736,34 @@ def show_user_admin_page() -> None:
     # ------ FORMULAIRE DE CRÉATION ---------------------------------
     with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
         col1, col2 = st.columns(2)
-
         with col1:
-            new_username = st.text_input("Nom d'utilisateur*")
-            new_password = st.text_input("Mot de passe*", type="password")
-            new_equipe   = st.text_input("Équipe", value="para")
-            new_fonction = st.text_input("Fonction", value="contremaître")
-
+            new_username = st.text_input("Nom d'utilisateur*", key="new_username")
+            new_password = st.text_input("Mot de passe*", type="password", key="new_password")
+            new_equipe   = st.text_input("Équipe", value="PARA", key="new_equipe")
+            new_fonction = st.text_input("Fonction", value="contremaître", key="new_fonction")
         with col2:
             st.markdown("### Permissions")
-            p_add   = st.checkbox("Peut ajouter des articles")
-            p_stats = st.checkbox("Peut voir les statistiques")
-            p_all   = st.checkbox("Peut voir toutes les commandes")
-            role    = st.selectbox("Rôle", ["user", "contremaitre", "admin"])
-
-        if st.button("Créer l'utilisateur", use_container_width=True):
-            ok, msg = create_new_user(
-                new_username,
-                new_password,
-                new_equipe,
-                new_fonction,
-                role,
-                p_add,
-                p_stats,
-                p_all,
-            )
-            (st.success if ok else st.error)(msg)
-            if ok:
-                st.rerun()
+            p_add   = st.checkbox("Peut ajouter des articles", key="p_add")
+            p_stats = st.checkbox("Peut voir les statistiques", key="p_stats")
+            p_all   = st.checkbox("Peut voir toutes les commandes", key="p_all")
+            role    = st.selectbox("Rôle", ["user", "contremaitre", "admin"], key="role_select")
+        if st.button("Créer l'utilisateur", use_container_width=True, key="btn_create_user"):
+            if not new_username or not new_password:
+                st.error("Veuillez remplir tous les champs obligatoires.")
+            else:
+                ok, msg = create_user(
+                    new_username,
+                    new_password,
+                    new_equipe,
+                    new_fonction,
+                    can_add_articles=int(p_add),
+                    can_view_stats=int(p_stats),
+                    can_view_all_orders=int(p_all),
+                    role=role
+                )
+                (st.success if ok else st.error)(msg)
+                if ok:
+                    st.rerun()
 
     # ------ LISTE & ÉDITION ----------------------------------------
     st.markdown("### 📄 Utilisateurs existants")
