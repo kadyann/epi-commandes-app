@@ -21,6 +21,7 @@ import hashlib
 import csv          # 📥 nécessaire pour écrire dans le catalogue
 import ast
 from typing import Tuple, Optional
+import string
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -134,50 +135,30 @@ st.markdown("""
 MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
 
 # Configuration base de données
-if 'DATABASE_URL' in os.environ:
-    DATABASE_URL = os.environ['DATABASE_URL']
-    USE_POSTGRESQL = True
-else:
-    DATABASE_PATH = 'commandes.db'
-    USE_POSTGRESQL = False
+DATABASE_URL = "postgresql://postgres:XmqANsOjbMMrtzLvkoDhRueHSTUpocsQ@gondola.proxy.rlwy.net:15641/railway"
+USE_POSTGRESQL = True
 
 # === CHARGEMENT DES DONNÉES ===
 @st.cache_data(ttl=60)
 def load_articles():
-    """Charge les articles depuis le CSV - AVEC VALIDATION DES COLONNES"""
+    """Charge les articles depuis le CSV - 5 colonnes strictes"""
     try:
-        # Essayer UTF-8 d'abord
-        df = pd.read_csv('articles.csv', encoding='utf-8')
-        print(f"📋 CSV lu avec succès : {len(df)} articles")
-        
-        # VALIDATION ET NETTOYAGE DES COLONNES ✅
-        required_columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
-        
-        # Vérifier que toutes les colonnes existent
-        if not all(col in df.columns for col in required_columns):
-            st.error(f"❌ Colonnes manquantes dans le CSV. Trouvées: {list(df.columns)}")
-            return create_sample_articles()
-        
-        # Nettoyer la colonne Prix - supprimer les lignes avec des prix non numériques
+        df = pd.read_csv('articles.csv', encoding='utf-8', usecols=[0,1,2,3,4])
+        df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+        # Nettoyage classique
         df = df.dropna(subset=['Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
-        df = df.dropna(subset=['Prix'])  # Supprimer les lignes où Prix ne peut pas être converti
-        
-        # Supprimer les lignes avec des données corrompues
-        df = df[df['Prix'] > 0]  # Prix doit être positif
-        df = df[df['Nom'].str.len() > 2]  # Nom doit avoir au moins 3 caractères
-        
-        print(f"✅ CSV nettoyé : {len(df)} articles valides")
+        df = df.dropna(subset=['Prix'])
+        df = df[df['Prix'] > 0]
+        df = df[df['Nom'].str.len() > 2]
         return df
-        
     except FileNotFoundError:
         st.warning("📁 Fichier articles.csv non trouvé, création d'articles d'exemple")
         return create_sample_articles()
     except UnicodeDecodeError:
         try:
-            df = pd.read_csv('articles.csv', encoding='latin-1')
-            print(f"📋 CSV lu (latin-1) : {len(df)} articles")
-            # Même validation ici
+            df = pd.read_csv('articles.csv', encoding='latin-1', usecols=[0,1,2,3,4])
+            df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
             return df
         except Exception as e:
             st.error(f"❌ Erreur lecture : {e}")
@@ -268,67 +249,39 @@ articles_df = load_articles()
 def init_database():
     """Initialise la base de données"""
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            
-            # Table users
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE NOT NULL,
-                    password VARCHAR(255) NOT NULL,
-                    role VARCHAR(20) DEFAULT 'user',
-                    equipe VARCHAR(50),
-                    fonction VARCHAR(100),
-                    couleur_preferee VARCHAR(30)
-                )
-            """)
-            
-            # Table commandes
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS commandes (
-                    id SERIAL PRIMARY KEY,
-                    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    contremaître VARCHAR(100),
-                    equipe VARCHAR(50),
-                    articles_json TEXT,
-                    total_prix DECIMAL(10,2),
-                    nb_articles INTEGER,
-                    user_id INTEGER
-                )
-            """)
-            
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            
-            # Table users
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL,
-                    role TEXT DEFAULT 'user',
-                    equipe TEXT,
-                    fonction TEXT,
-                    couleur_preferee TEXT
-                )
-            """)
-            
-            # Table commandes
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS commandes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    contremaître TEXT,
-                    equipe TEXT,
-                    articles_json TEXT,
-                    total_prix REAL,
-                    nb_articles INTEGER,
-                    user_id INTEGER
-                )
-            """)
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute('SET search_path TO public')
+        
+        # Table users avec TOUTES les colonnes nécessaires
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(20) DEFAULT 'user',
+                equipe VARCHAR(50),
+                fonction VARCHAR(100),
+                couleur_preferee VARCHAR(30),
+                can_add_articles BOOLEAN DEFAULT FALSE,
+                can_view_stats BOOLEAN DEFAULT FALSE,
+                can_view_all_orders BOOLEAN DEFAULT FALSE
+            )
+        """)
+        
+        # Table commandes
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS commandes (
+                id SERIAL PRIMARY KEY,
+                date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                contremaître VARCHAR(100),
+                equipe VARCHAR(50),
+                articles_json TEXT,
+                total_prix DECIMAL(10,2),
+                nb_articles INTEGER,
+                user_id INTEGER
+            )
+        """)
         
         conn.commit()
         conn.close()
@@ -475,48 +428,23 @@ def migrate_add_user_id_column():
 
 # === GESTION UTILISATEURS ===
 def init_users_db():
-    """Initialise les utilisateurs par défaut"""
-    # Migration pour ajouter la couleur préférée
-    migrate_add_couleur_column()
-    
-    # Créer l'utilisateur admin par défaut
-    admin_password = hashlib.sha256("admin123".encode()).hexdigest()
-    
+    """Initialise l'utilisateur admin par défaut"""
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            
-            # Vérifier si admin existe
-            cursor.execute("SELECT id FROM users WHERE username = %s", ("admin",))
-            if cursor.fetchone():
-                # Mettre à jour admin existant
-                cursor.execute("""
-                    UPDATE users SET couleur_preferee = %s WHERE username = %s
-                """, ("DT770", "admin"))
-            else:
-                # Créer nouvel admin
-                cursor.execute("""
-                    INSERT INTO users (username, password_hash, role, equipe, fonction, couleur_preferee) 
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            
-            # Vérifier si admin existe
-            cursor.execute("SELECT id FROM users WHERE username = ?", ("admin",))
-            if cursor.fetchone():
-                # Mettre à jour admin existant
-                cursor.execute("""
-                    UPDATE users SET couleur_preferee = ? WHERE username = ?
-                """, ("DT770", "admin"))
-            else:
-                # Créer nouvel admin
-                cursor.execute("""
-                    INSERT INTO users (username, password_hash, role, equipe, fonction, couleur_preferee) 
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", "DT770"))
+        admin_password = hashlib.sha256("admin123".encode()).hexdigest()
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Vérifier si admin existe
+        cursor.execute("SELECT id FROM users WHERE username = %s", ("admin",))
+        if not cursor.fetchone():
+            # Créer l'admin
+            cursor.execute("""
+                INSERT INTO users (username, password_hash, role, equipe, fonction, 
+                                 couleur_preferee, can_add_articles, can_view_stats, can_view_all_orders) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", 
+                  "DT770", True, True, True))
         
         conn.commit()
         conn.close()
@@ -525,55 +453,40 @@ def init_users_db():
         st.error(f"Erreur initialisation admin: {e}")
 
 def authenticate_user(username, password):
-    """
-    Renvoie le dict utilisateur si les identifiants sont valides, sinon None
-    """
-    ensure_users_table()
-    if USE_POSTGRESQL:
+    """Renvoie le dict utilisateur si les identifiants sont valides, sinon None"""
+    try:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, username, password_hash, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
+            SELECT id, username, password_hash, role, equipe, fonction, 
+                   can_add_articles, can_view_stats, can_view_all_orders
             FROM users WHERE username = %s
         """, (username,))
         row = cursor.fetchone()
         conn.close()
+        
         if not row:
             return None
+            
         (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all) = row
+        
         # Vérification du mot de passe hashé
         if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
-            pass_ok = True
-        else:
-            pass_ok = False
-    else:
-        conn   = sqlite3.connect('users.db')
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, username, password_hash, role, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders
-            FROM users WHERE username = ?
-        """, (username,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return None
-        (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all) = row
-        if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
-            pass_ok = True
-        else:
-            pass_ok = False
-    if not pass_ok:
+            return {
+                "id": uid,
+                "username": user,
+                "role": role,
+                "equipe": equipe,
+                "fonction": fonction,
+                "can_add_articles": bool(c_add),
+                "can_view_stats": bool(c_stats),
+                "can_view_all_orders": bool(c_all)
+            }
         return None
-    return {
-        "id": uid,
-        "username": user,
-        "role": role,
-        "equipe": equipe,
-        "fonction": fonction,
-        "can_add_articles": bool(c_add),
-        "can_view_stats":   bool(c_stats),
-        "can_view_all_orders": bool(c_all)
-    }
+        
+    except Exception as e:
+        st.error(f"Erreur authentification: {e}")
+        return None
 
 def add_user(username, password, role='user', equipe='', fonction='', email=''):
     """Ajoute un nouvel utilisateur"""
@@ -838,10 +751,25 @@ def show_login():
             if username and password:
                 user = authenticate_user(username, password)
                 if user:
+                    # Vérifier si le mot de passe doit être changé
+                    try:
+                        conn = psycopg2.connect(DATABASE_URL)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT must_change_password FROM users WHERE username = %s", (username,))
+                        res = cursor.fetchone()
+                        conn.close()
+                        must_change = res[0] if res else False
+                    except Exception:
+                        must_change = False
                     st.session_state.authenticated = True
                     st.session_state.current_user  = user
-                    st.session_state.page          = "catalogue"   # ou page d'accueil
-                    st.rerun()
+                    st.session_state.current_user['must_change_password'] = must_change
+                    if must_change:
+                        st.session_state.page = 'force_change_password'
+                        st.rerun()
+                    else:
+                        st.session_state.page = "catalogue"
+                        st.rerun()
                 else:
                     st.error("Hmm… Ces identifiants ne me disent rien !")
             else:
@@ -1996,6 +1924,15 @@ def show_historique():
                             st.write(f"• {str(article)}")
                 except Exception as e:
                     st.error(f"❌ Erreur affichage articles: {e}")
+
+            # === AJOUTE CE BLOC CI-DESSOUS ===
+            if st.session_state.current_user.get("role") == "admin":
+                if st.button(f"🗑️ Supprimer", key=f"delete_order_{order_id}"):
+                    if delete_commande(order_id):
+                        st.success("✅ Commande supprimée")
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur suppression")
     except Exception as e:
         st.error(f"Erreur chargement historique: {e}")
 
@@ -2066,6 +2003,8 @@ def main():
             show_register()
         elif st.session_state.get('page') == 'reset_password':
             show_reset_password()
+        elif st.session_state.get('page') == 'force_change_password':
+            show_force_password_change()
         else:
             show_login()
     else:
@@ -2216,33 +2155,49 @@ def show_admin_articles():
         else:
             st.info("🔒 Suppression réservée aux administrateurs, gestionnaires et techniciens.")
 
-def add_article_to_csv(reference: str,
-                       nom: str,
-                       description: str,
-                       prix: str,
-                       unite: str,
-                       categorie: str = "Autre") -> tuple[bool, str]:
+    with tabs[1]:   # ➕ Ajouter article
+        st.markdown("#### ➕ Ajouter un nouvel article au catalogue")
+        categories = [
+            "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
+            "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
+            "Oxycoupage", "Outil", "Lampe", "Marquage"
+        ]
+        with st.form("ajout_article_form"):
+            ref = st.text_input("N° Référence*")
+            nom = st.text_input("Nom*")
+            description = st.selectbox("Description* (catégorie)", categories)
+            prix = st.number_input("Prix*", min_value=0.01, step=0.01, format="%.2f")
+            unite = st.text_input("Unité*", value="Par unité")
+            submitted = st.form_submit_button("Ajouter l'article")
+            if submitted:
+                ok, msg = add_article_to_csv(ref, nom, description, prix, unite)
+                if ok:
+                    st.success(msg)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    with tabs[2]:   # 📤 Import CSV
+        # ... code existant ...
+        pass  # (inchangé)
+
+def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs):
     """
-    Ajoute une ligne au fichier catalogue (CSV séparateur ';').
-    L'appel courant de l'interface transmet 5 arguments ; la catégorie est
-    optionnelle et positionnée en dernier.
+    Ajoute une ligne au fichier articles.csv (5 colonnes strictes, ignore tout champ en trop).
     Retourne (success, message).
     """
     try:
-        file_path = "catalogue.csv"
-        header    = ['reference', 'nom', 'description', 'prix', 'unite', 'categorie']
-
-        # Création du fichier s'il n'existe pas encore
+        file_path = "articles.csv"
+        header = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
         file_exists = os.path.isfile(file_path)
         with open(file_path, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f, delimiter=';')
+            writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(header)
-
-            writer.writerow([reference, nom, description, prix, unite, categorie])
-
+            # On n'enregistre que les 5 premiers champs, même si d'autres sont passés
+            writer.writerow([reference, nom, description, prix, unite])
         return True, "✅ Article ajouté au catalogue"
-
     except Exception as e:
         return False, f"❌ Erreur ajout article : {e}"
 
@@ -2275,23 +2230,6 @@ def import_articles_from_csv(new_articles_df):
     except Exception as e:
         st.error(f"Erreur import articles: {e}")
         return False
-
-def show_admin_users():
-    st.markdown("# 👥 Gestion des utilisateurs - Administration")
-    st.info(f"DEBUG: Utilisateurs récupérés : {get_all_users()}")  # <--- AJOUTE CETTE LIGNE
-    current_user = st.session_state.get("current_user", {})
-    is_admin = (current_user or {}).get("role") == "admin"
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### ➕ Créer un nouvel utilisateur")
-        # ... création ...
-    if is_admin:
-        with col2:
-            st.markdown("### 🗑️ Supprimer un utilisateur")
-            # ... suppression ...
-    else:
-        with col2:
-            st.info("Seul l'administrateur peut supprimer des utilisateurs.")
 
 def show_user_management():
     """Interface améliorée de gestion des utilisateurs - AVEC SUPPRESSION"""
@@ -2408,46 +2346,11 @@ def show_user_management():
                                 st.rerun()
                             else:
                                 st.error(f"❌ {message}")
+                                if "constraint" in message.lower() or "foreign key" in message.lower():
+                                    st.info("💡 Impossible de supprimer cet utilisateur car il a des commandes. Supprime-les d'abord dans l'historique si besoin.")
                             
     except Exception as e:
         st.error(f"Erreur chargement utilisateurs: {e}")
-
-def get_all_users():
-    """Récupère tous les utilisateurs (ordre et champs stricts pour l'UI)"""
-    try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, username, equipe, fonction, 
-                       COALESCE(can_add_articles, false), 
-                       COALESCE(can_view_stats, false), 
-                       COALESCE(can_view_all_orders, false), 
-                       role 
-                FROM users
-                ORDER BY username
-            """)
-            users = cursor.fetchall()
-            conn.close()
-            return users
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, username, equipe, fonction, 
-                    COALESCE(can_add_articles, 0),
-                    COALESCE(can_view_stats, 0),
-                    COALESCE(can_view_all_orders, 0),
-                    role 
-                FROM users
-                ORDER BY username
-            """)
-            users = cursor.fetchall()
-            conn.close()
-            return users
-    except Exception as e:
-        st.error(f"Erreur chargement utilisateurs: {e}")
-        return []
 
 def send_password_reset_email(email, new_password):
     """Envoie un email avec le nouveau mot de passe"""
@@ -2545,80 +2448,29 @@ def reset_user_password(username, equipe, couleur_preferee):
         return False, f"Erreur réinitialisation: {e}"
 
 def show_reset_password():
-    """Page de réinitialisation de mot de passe avec question de sécurité"""
+    """Page de réinitialisation de mot de passe avec question de sécurité (SANS captcha)"""
     st.markdown("### 🔑 Réinitialisation du mot de passe")
-    
-    # Générer un nouveau captcha si nécessaire
-    if 'captcha_question' not in st.session_state or 'captcha_answer' not in st.session_state:
-        question, answer = generate_captcha()
-        st.session_state.captcha_question = question
-        st.session_state.captcha_answer = answer
-    
     with st.form("reset_form"):
         st.markdown("⚠️ **Sécurité renforcée** - Répondez aux questions de sécurité pour récupérer votre mot de passe.")
-        
         username = st.text_input("👤 Nom d'utilisateur")
-        
-        # Sélection d'équipe
         equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE"]
         equipe = st.selectbox("👷‍♂️ Votre équipe", ["Sélectionnez..."] + equipes)
-        
-        # Question de sécurité
         couleur_preferee = st.text_input("🎨 Votre couleur préférée", placeholder="Ex: bleu, rouge, vert...")
-        
-        # Captcha
-        st.markdown("🤖 **Vérification anti-robot**")
-        st.write(f"**Question:** {st.session_state.captcha_question}")
-        captcha_response = st.number_input("Votre réponse:", min_value=-100, max_value=100, value=0, step=1)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            submitted = st.form_submit_button("🔑 Récupérer mon mot de passe", use_container_width=True)
-        with col2:
-            refresh_captcha = st.form_submit_button("🔄 Nouveau captcha", use_container_width=True)
-        
-        if refresh_captcha:
-            # Générer un nouveau captcha
-            question, answer = generate_captcha()
-            st.session_state.captcha_question = question
-            st.session_state.captcha_answer = answer
-            st.rerun()
-        
+        submitted = st.form_submit_button("🔑 Récupérer mon mot de passe", use_container_width=True)
         if submitted:
-            # Validation des champs
             if not username or equipe == "Sélectionnez..." or not couleur_preferee:
                 st.error("❌ Veuillez remplir tous les champs")
-            elif captcha_response != st.session_state.captcha_answer:
-                st.error("❌ Réponse au captcha incorrecte")
-                # Générer un nouveau captcha après échec
-                question, answer = generate_captcha()
-                st.session_state.captcha_question = question
-                st.session_state.captcha_answer = answer
             else:
                 success, message = reset_user_password(username, equipe, couleur_preferee)
                 if success:
                     st.success("✅ Mot de passe réinitialisé avec succès !")
                     st.info(message)
                     st.warning("⚠️ Notez bien ce mot de passe temporaire et changez-le dès votre prochaine connexion")
-                    # Nettoyer le captcha
-                    del st.session_state.captcha_question
-                    del st.session_state.captcha_answer
                 else:
                     st.error(f"❌ {message}")
-                    # Générer un nouveau captcha après échec
-                    question, answer = generate_captcha()
-                    st.session_state.captcha_question = question
-                    st.session_state.captcha_answer = answer
-    
     st.markdown("---")
     st.info("💡 **Aide:** Si vous ne vous souvenez pas de votre couleur préférée, contactez l'administrateur.")
-    
     if st.button("← Retour à la connexion"):
-        # Nettoyer le captcha
-        if 'captcha_question' in st.session_state:
-            del st.session_state.captcha_question
-        if 'captcha_answer' in st.session_state:
-            del st.session_state.captcha_answer
         st.session_state.page = 'login'
         st.rerun()
 
@@ -3090,33 +2942,26 @@ def get_user_email(username):
         return None
 
 def delete_user(user_id):
-    """Supprime un utilisateur de la base de données (sauf admin principal)"""
+    """Supprime un utilisateur (Postgres uniquement)"""
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            # Vérifier que ce n'est pas l'admin principal
-            cursor.execute('SELECT username FROM users WHERE id = %s', (user_id,))
-            user = cursor.fetchone()
-            if user and user[0] == 'admin':
-                conn.close()
-                return False, "Impossible de supprimer l'administrateur principal"
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute('SELECT username FROM users WHERE id = %s', (user_id,))
+        user = cursor.fetchone()
+        if user and user[0] == 'admin':
+            conn.close()
+            return False, "Impossible de supprimer l'administrateur principal"
+        try:
             cursor.execute('DELETE FROM users WHERE id = %s', (user_id,))
             conn.commit()
+        except Exception as e:
             conn.close()
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
-            user = cursor.fetchone()
-            if user and user[0] == 'admin':
-                conn.close()
-                return False, "Impossible de supprimer l'administrateur principal"
-            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-            conn.commit()
-            conn.close()
+            return False, f"Erreur suppression SQL : {e}"
+        conn.close()
+        st.cache_data.clear()
         return True, "Utilisateur supprimé avec succès"
     except Exception as e:
+        st.error(f"Erreur suppression: {e}")
         return False, f"Erreur suppression: {e}"
 
 def user_can_add_articles():
@@ -3233,96 +3078,58 @@ def user_can_view_all_orders():
 
 
 def update_user_permissions(user_id, permissions):
-    """Met à jour toutes les permissions d'un utilisateur"""
+    """Met à jour les permissions (Postgres uniquement)"""
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users 
-                SET can_add_articles = %s, 
-                    can_view_stats = %s, 
-                    can_view_all_orders = %s
-                WHERE id = %s
-            """, (
-                permissions['can_add_articles'],
-                permissions['can_view_stats'], 
-                permissions['can_view_all_orders'],
-                user_id
-            ))
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users 
-                SET can_add_articles = ?, 
-                    can_view_stats = ?, 
-                    can_view_all_orders = ?
-                WHERE id = ?
-            """, (
-                permissions['can_add_articles'],
-                permissions['can_view_stats'], 
-                permissions['can_view_all_orders'],
-                user_id
-            ))
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users 
+            SET can_add_articles = %s, 
+                can_view_stats = %s, 
+                can_view_all_orders = %s
+            WHERE id = %s
+        """, (
+            permissions['can_add_articles'],
+            permissions['can_view_stats'], 
+            permissions['can_view_all_orders'],
+            user_id
+        ))
         conn.commit()
         conn.close()
+        st.cache_data.clear()
         return True
+        
     except Exception as e:
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
 
 def create_user(username, password, equipe, fonction, couleur_preferee="DT770", can_add_articles=0, can_view_stats=0, can_view_all_orders=0, role="user"):
+    """Crée un utilisateur (Postgres uniquement) avec must_change_password à True et mot de passe initial basé sur la couleur préférée."""
     try:
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO users (username, password_hash, equipe, fonction,
-                 role, can_add_articles, can_view_stats, can_view_all_orders, couleur_preferee)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    username,
-                    pwd_hash,
-                    equipe,
-                    fonction,
-                    role,
-                    bool(can_add_articles),
-                    bool(can_view_stats),
-                    bool(can_view_all_orders),
-                    couleur_preferee
-                ),
-            )
-        else:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO users (username, password_hash, equipe, fonction,
-                 role, can_add_articles, can_view_stats, can_view_all_orders, couleur_preferee)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    username,
-                    pwd_hash,
-                    equipe,
-                    fonction,
-                    role,
-                    int(can_add_articles),
-                    int(can_view_stats),
-                    int(can_view_all_orders),
-                    couleur_preferee
-                ),
-            )
+        pwd_hash = hashlib.sha256(couleur_preferee.encode()).hexdigest()  # Mot de passe initial = couleur préférée hashée
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        # Ajout du champ must_change_password si besoin
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT TRUE")
+            conn.commit()
+        except:
+            pass
+        cursor.execute("""
+            INSERT INTO users (username, password_hash, equipe, fonction,
+             role, can_add_articles, can_view_stats, can_view_all_orders, couleur_preferee, must_change_password)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            username, pwd_hash, equipe, fonction, role,
+            bool(can_add_articles), bool(can_view_stats), 
+            bool(can_view_all_orders), couleur_preferee, True
+        ))
         conn.commit()
         conn.close()
-        st.cache_data.clear()  # Force le refresh
-        return True, "✅ Utilisateur créé avec succès !"
+        st.cache_data.clear()
+        st.rerun()
+        return True, "✅ Utilisateur créé avec succès ! (Mot de passe initial = couleur préférée)"
     except Exception as e:
-        st.error(f"❌ Erreur création utilisateur : {e}")
         return False, f"❌ Erreur création utilisateur : {e}"
 
 def get_category_emoji(category):
@@ -3450,29 +3257,29 @@ def create_missing_columns():
         return False
 
 def get_all_users():
-    """Récupère tous les utilisateurs"""
+    """Récupère tous les utilisateurs (version SQL directe qui fonctionne)"""
     try:
-        conn = sqlite3.connect('users.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        
-        # D'abord créer les colonnes si elles n'existent pas
-        create_missing_columns()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        direct_count = cursor.fetchone()[0]
         
         cursor.execute("""
-            SELECT id, username, equipe, fonction, 
-                   COALESCE(can_add_articles, 0), 
-                   COALESCE(can_view_stats, 0), 
-                   COALESCE(can_view_all_orders, 0), 
-                   role 
+            SELECT id, username, equipe, fonction,
+                   COALESCE(can_add_articles, false),
+                   COALESCE(can_view_stats, false),
+                   COALESCE(can_view_all_orders, false),
+                   role
             FROM users
+            ORDER BY id
         """)
-        
         users = cursor.fetchall()
         conn.close()
+
         return users
         
     except Exception as e:
-        st.error(f"Erreur chargement utilisateurs: {e}")
+        st.error(f"Erreur : {e}")
         return []
 
 def show_admin_page():
@@ -3736,6 +3543,15 @@ def get_ref_col(df: pd.DataFrame) -> str:
     return df.columns[0]
 
 def show_user_admin_page() -> None:
+    # ---------- DEBUG PAGE ----------
+    st.info(f"DEBUG page admin ➜ connexion : {DATABASE_URL}")
+    
+    # TEST DIRECT DE LA FONCTION
+    st.error("🚨 TEST : avant appel get_all_users()")
+    test_users = get_all_users()
+    st.error(f"🚨 TEST : après appel, résultat = {len(test_users)} users")
+    # --------------------------------
+    
     st.markdown("## 👥 Gestion des utilisateurs – Administration")
     st.write("---")
 
@@ -3745,16 +3561,15 @@ def show_user_admin_page() -> None:
         with col1:
             new_username = st.text_input("Nom d'utilisateur*", key="new_username")
             new_password = st.text_input("Mot de passe*", type="password", key="new_password")
-            # Menu déroulant pour l'équipe
             equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", "AUTRE"]
             new_equipe = st.selectbox("Équipe", equipes, key="new_equipe_select")
             if new_equipe == "AUTRE":
                 new_equipe = st.text_input("Précisez l'équipe", key="new_equipe_autre")
-            # Menu déroulant pour la fonction
             fonctions = ["contremaître", "RTZ", "technicien", "opérateur", "gestionnaire", "AUTRE"]
             new_fonction = st.selectbox("Fonction", fonctions, key="new_fonction_select")
             if new_fonction == "AUTRE":
                 new_fonction = st.text_input("Précisez la fonction", key="new_fonction_autre")
+            new_couleur = st.text_input("Couleur préférée*", key="new_couleur_preferee")
         with col2:
             st.markdown("### Permissions")
             p_add   = st.checkbox("Peut ajouter des articles", key="p_add")
@@ -3762,10 +3577,9 @@ def show_user_admin_page() -> None:
             p_all   = st.checkbox("Peut voir toutes les commandes", key="p_all")
             role    = st.selectbox("Rôle", ["user", "contremaitre", "admin"], key="role_select")
         if st.button("Créer l'utilisateur", use_container_width=True, key="btn_create_user"):
-            if not new_username or not new_password:
+            if not new_username or not new_password or not new_couleur:
                 st.error("Veuillez remplir tous les champs obligatoires.")
             else:
-                # Vérifier unicité
                 if user_exists(new_username):
                     st.error("❌ Ce nom d'utilisateur existe déjà.")
                 else:
@@ -3774,6 +3588,7 @@ def show_user_admin_page() -> None:
                         new_password,
                         new_equipe,
                         new_fonction,
+                        couleur_preferee=new_couleur,
                         can_add_articles=int(p_add),
                         can_view_stats=int(p_stats),
                         can_view_all_orders=int(p_all),
@@ -3853,9 +3668,14 @@ def show_user_admin_page() -> None:
                     key=f"del_{uid}",
                     use_container_width=True,
                 ):
-                    delete_user(uid)
-                    st.warning("Utilisateur supprimé.")
-                    st.rerun()
+                    success, msg = delete_user(uid)
+                    if success:
+                        st.warning("Utilisateur supprimé.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                        if "constraint" in msg.lower() or "foreign key" in msg.lower():
+                            st.info("💡 Impossible de supprimer cet utilisateur car il a des commandes. Supprime-les d'abord dans l'historique si besoin.")
 
 st.markdown(
     """
@@ -3869,19 +3689,16 @@ EQUIPES = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", 
 
 # --- Fonction pour vérifier l'existence d'un utilisateur (insensible à la casse) ---
 def user_exists(username):
-    if USE_POSTGRESQL:
+    """Vérifie si un utilisateur existe (Postgres uniquement)"""
+    try:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM users WHERE LOWER(username) = %s", (username.lower(),))
         exists = cursor.fetchone() is not None
         conn.close()
-    else:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM users WHERE LOWER(username) = ?", (username.lower(),))
-        exists = cursor.fetchone() is not None
-        conn.close()
-    return exists
+        return exists
+    except Exception:
+        return False
 
 def to_bool(val):
     if isinstance(val, bool):
@@ -3893,37 +3710,60 @@ def to_bool(val):
     return False
 
 def refresh_current_user_permissions():
-    """Recharge les permissions de l'utilisateur courant depuis la base."""
+    """Recharge les permissions de l'utilisateur courant (Postgres uniquement)"""
     user_info = st.session_state.get('current_user', {})
     username = user_info.get('username')
     if not username:
         return
     try:
-        if USE_POSTGRESQL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT role, can_add_articles, can_view_stats, can_view_all_orders
-                FROM users WHERE username = %s
-            """, (username,))
-        else:
-            conn = sqlite3.connect('users.db')
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT role, can_add_articles, can_view_stats, can_view_all_orders
-                FROM users WHERE username = ?
-            """, (username,))
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT role, can_add_articles, can_view_stats, can_view_all_orders
+            FROM users WHERE username = %s
+        """, (username,))
         result = cursor.fetchone()
         conn.close()
+        
         if result:
             st.session_state.current_user['role'] = result[0]
-            st.session_state.current_user['can_add_articles'] = to_bool(result[1])
-            st.session_state.current_user['can_view_stats'] = to_bool(result[2])
-            st.session_state.current_user['can_view_all_orders'] = to_bool(result[3])
+            st.session_state.current_user['can_add_articles'] = bool(result[1])
+            st.session_state.current_user['can_view_stats'] = bool(result[2])
+            st.session_state.current_user['can_view_all_orders'] = bool(result[3])
+            
     except Exception as e:
         st.error(f"Erreur rafraîchissement permissions : {e}")
+
+def show_force_password_change():
+    st.markdown("### 🔒 Changement de mot de passe obligatoire")
+    st.warning("Pour des raisons de sécurité, vous devez définir un nouveau mot de passe.")
+    with st.form("force_change_pwd_form"):
+        new_pwd = st.text_input("Nouveau mot de passe", type="password")
+        confirm_pwd = st.text_input("Confirmer le mot de passe", type="password")
+        submitted = st.form_submit_button("Changer le mot de passe")
+        if submitted:
+            if not new_pwd or not confirm_pwd:
+                st.error("Veuillez remplir les deux champs.")
+            elif new_pwd != confirm_pwd:
+                st.error("Les mots de passe ne correspondent pas.")
+            elif len(new_pwd) < 6:
+                st.error("Le mot de passe doit contenir au moins 6 caractères.")
+            else:
+                user = st.session_state.get('current_user', {})
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    pwd_hash = hashlib.sha256(new_pwd.encode()).hexdigest()
+                    cursor.execute("UPDATE users SET password_hash = %s, must_change_password = FALSE WHERE id = %s", (pwd_hash, user['id']))
+                    conn.commit()
+                    conn.close()
+                    st.success("Mot de passe changé avec succès !")
+                    st.session_state.current_user['must_change_password'] = False
+                    st.session_state.page = 'catalogue'
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur lors du changement de mot de passe : {e}")
 
 if __name__ == "__main__":
     main()
 
-show_admin_users()
