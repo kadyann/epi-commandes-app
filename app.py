@@ -3561,6 +3561,7 @@ def show_user_admin_page() -> None:
         with col1:
             new_username = st.text_input("Nom d'utilisateur*", key="new_username")
             new_password = st.text_input("Mot de passe*", type="password", key="new_password")
+            st.caption("Le mot de passe initial doit contenir au moins 6 caractères.")
             equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", "AUTRE"]
             new_equipe = st.selectbox("Équipe", equipes, key="new_equipe_select")
             if new_equipe == "AUTRE":
