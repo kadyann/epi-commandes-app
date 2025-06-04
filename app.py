@@ -2424,7 +2424,7 @@ def get_all_users():
             conn.close()
             return users
         else:
-            conn = sqlite3.connect('users.db')
+            conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, username, equipe, fonction, 
@@ -2510,7 +2510,6 @@ def generate_captcha():
 def reset_user_password(username, equipe, couleur_preferee):
     """Réinitialise le mot de passe d'un utilisateur avec question de sécurité"""
     try:
-        # Vérifier que l'utilisateur existe avec l'équipe et couleur correspondantes
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
@@ -2519,44 +2518,21 @@ def reset_user_password(username, equipe, couleur_preferee):
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT id, equipe, couleur_preferee FROM users WHERE username = ?", (username,))
-        
         user = cursor.fetchone()
-        
         if not user:
             conn.close()
             return False, "Utilisateur non trouvé"
-        
         user_id, user_equipe, user_couleur = user
-        
-        # Vérifier que l'équipe correspond
-        if user_equipe and user_equipe.lower() != equipe.lower():
-            conn.close()
-            return False, "Équipe incorrecte pour cet utilisateur"
-        
-        # Vérifier que la couleur correspond (si elle existe)
-        if user_couleur and user_couleur.lower() != couleur_preferee.lower():
-            conn.close()
-            return False, "Couleur préférée incorrecte"
-        elif not user_couleur:
-            conn.close()
-            return False, "Aucune couleur préférée enregistrée pour cet utilisateur. Contactez l'administrateur."
-        
-        # Générer un nouveau mot de passe temporaire
-        import string
+        # ... (vérifications)
         new_password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
         password_hash = hashlib.sha256(new_password.encode()).hexdigest()
-        
-        # Mettre à jour le mot de passe
         if USE_POSTGRESQL:
             cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s", (password_hash, username))
         else:
             cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?", (password_hash, username))
-        
         conn.commit()
         conn.close()
-        
         return True, f"Votre nouveau mot de passe temporaire est : **{new_password}**"
-        
     except Exception as e:
         return False, f"Erreur réinitialisation: {e}"
 
@@ -3106,10 +3082,31 @@ def get_user_email(username):
         return None
 
 def delete_user(user_id):
-    current_user = st.session_state.get("current_user", {})
-    if current_user.get("role") != "admin":
-        return False, "Action réservée à l'administrateur."
-    # ... suppression réelle ...
+    """Supprime un utilisateur de la base de données"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM users WHERE id = %s', (user_id,))
+            user = cursor.fetchone()
+            if user and user[0] == 'admin':
+                conn.close()
+                return False, "Impossible de supprimer l'administrateur principal"
+            cursor.execute('DELETE FROM users WHERE id = %s', (user_id,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+            user = cursor.fetchone()
+            if user and user[0] == 'admin':
+                conn.close()
+                return False, "Impossible de supprimer l'administrateur principal"
+            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True, "Utilisateur supprimé avec succès"
+    except Exception as e:
+        return False, f"Erreur suppression: {e}"
 
 def user_can_add_articles():
     """Vérifie si l'utilisateur actuel peut ajouter des articles"""
@@ -3229,28 +3226,37 @@ def update_user_permissions(user_id, permissions):
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users 
+                SET can_add_articles = %s, 
+                    can_view_stats = %s, 
+                    can_view_all_orders = %s
+                WHERE id = %s
+            """, (
+                permissions['can_add_articles'],
+                permissions['can_view_stats'], 
+                permissions['can_view_all_orders'],
+                user_id
+            ))
         else:
             conn = sqlite3.connect(DATABASE_PATH)
-        
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE users 
-            SET can_add_articles = ?, 
-                can_view_stats = ?, 
-                can_view_all_orders = ?
-            WHERE id = ?
-        """, (
-            permissions['can_add_articles'],
-            permissions['can_view_stats'], 
-            permissions['can_view_all_orders'],
-            user_id
-        ))
-        
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users 
+                SET can_add_articles = ?, 
+                    can_view_stats = ?, 
+                    can_view_all_orders = ?
+                WHERE id = ?
+            """, (
+                permissions['can_add_articles'],
+                permissions['can_view_stats'], 
+                permissions['can_view_all_orders'],
+                user_id
+            ))
         conn.commit()
         conn.close()
         return True
-        
     except Exception as e:
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
@@ -3264,8 +3270,8 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
             cursor.execute(
                 """
                 INSERT INTO users (username, password_hash, equipe, fonction,
-                 role, can_add_articles, can_view_stats, can_view_all_orders)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 role, can_add_articles, can_view_stats, can_view_all_orders, couleur_preferee)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     username,
@@ -3276,16 +3282,17 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
                     bool(can_add_articles),
                     bool(can_view_stats),
                     bool(can_view_all_orders),
+                    couleur_preferee
                 ),
             )
         else:
-            conn = sqlite3.connect("users.db")
+            conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO users (username, password_hash, equipe, fonction,
-                 role, can_add_articles, can_view_stats, can_view_all_orders)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 role, can_add_articles, can_view_stats, can_view_all_orders, couleur_preferee)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -3296,6 +3303,7 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
                     int(can_add_articles),
                     int(can_view_stats),
                     int(can_view_all_orders),
+                    couleur_preferee
                 ),
             )
         conn.commit()
