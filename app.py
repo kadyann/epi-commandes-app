@@ -2278,8 +2278,7 @@ def import_articles_from_csv(new_articles_df):
 
 def show_admin_users():
     st.markdown("# 👥 Gestion des utilisateurs - Administration")
-    users = get_all_users()
-    st.info(f"DEBUG: Utilisateurs récupérés : {users}")  # <--- AJOUTE CETTE LIGNE
+    st.info(f"DEBUG: Utilisateurs récupérés : {get_all_users()}")  # <--- AJOUTE CETTE LIGNE
     current_user = st.session_state.get("current_user", {})
     is_admin = (current_user or {}).get("role") == "admin"
     col1, col2 = st.columns(2)
