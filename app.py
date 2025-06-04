@@ -2414,7 +2414,7 @@ def show_user_management():
         st.error(f"Erreur chargement utilisateurs: {e}")
 
 def get_all_users():
-    """Récupère tous les utilisateurs"""
+    """Récupère tous les utilisateurs (ordre et champs stricts pour l'UI)"""
     try:
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
@@ -2426,6 +2426,7 @@ def get_all_users():
                        COALESCE(can_view_all_orders, false), 
                        role 
                 FROM users
+                ORDER BY username
             """)
             users = cursor.fetchall()
             conn.close()
@@ -2435,11 +2436,12 @@ def get_all_users():
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, username, equipe, fonction, 
-                       COALESCE(can_add_articles, 0), 
-                       COALESCE(can_view_stats, 0), 
-                       COALESCE(can_view_all_orders, 0), 
-                       role 
+                    COALESCE(can_add_articles, 0),
+                    COALESCE(can_view_stats, 0),
+                    COALESCE(can_view_all_orders, 0),
+                    role 
                 FROM users
+                ORDER BY username
             """)
             users = cursor.fetchall()
             conn.close()
@@ -3318,6 +3320,7 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
             )
         conn.commit()
         conn.close()
+        st.cache_data.clear()  # Force le refresh
         return True, "✅ Utilisateur créé avec succès !"
     except Exception as e:
         st.error(f"❌ Erreur création utilisateur : {e}")
