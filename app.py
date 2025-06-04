@@ -2097,7 +2097,7 @@ def main():
                 st.warning("⛔ Accès réservé.")
         elif page == "admin_users":
             if st.session_state.get('current_user', {}).get('role') == 'admin':
-                show_admin_page()
+                show_user_management()
             else:
                 st.warning("⛔ Accès réservé.")
         else:
