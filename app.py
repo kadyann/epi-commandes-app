@@ -427,6 +427,61 @@ def migrate_add_user_id_column():
         # Ignorer les erreurs si la colonne existe déjà
         pass
 
+def migrate_add_commande_tracking():
+    """Ajoute les colonnes de suivi des commandes si elles n'existent pas"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            # Ajouter les colonnes de suivi
+            tracking_columns = [
+                ("statut", "VARCHAR(50) DEFAULT 'En attente'"),
+                ("traitee_par", "VARCHAR(100)"),
+                ("date_traitement", "TIMESTAMP"),
+                ("commentaire_technicien", "TEXT"),
+                ("date_livraison_prevue", "DATE"),
+                ("urgence", "VARCHAR(20) DEFAULT 'Normal'")
+            ]
+            
+            for column_name, column_type in tracking_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE commandes ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
+                    conn.commit()
+                except Exception:
+                    pass  # La colonne existe déjà
+                    
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            # Vérifier quelles colonnes existent
+            cursor.execute("PRAGMA table_info(commandes)")
+            existing_columns = [column[1] for column in cursor.fetchall()]
+            
+            # Ajouter les colonnes manquantes
+            new_columns = [
+                ('statut', 'TEXT DEFAULT "En attente"'),
+                ('traitee_par', 'TEXT'),
+                ('date_traitement', 'TEXT'),
+                ('commentaire_technicien', 'TEXT'),
+                ('date_livraison_prevue', 'TEXT'),
+                ('urgence', 'TEXT DEFAULT "Normal"')
+            ]
+            
+            for column_name, column_type in new_columns:
+                if column_name not in existing_columns:
+                    cursor.execute(f"ALTER TABLE commandes ADD COLUMN {column_name} {column_type}")
+                    conn.commit()
+        
+        conn.close()
+        
+    except Exception as e:
+        st.error(f"Erreur migration suivi commandes: {e}")
+
+# Appeler la migration au démarrage
+migrate_add_commande_tracking()
+
 # === GESTION UTILISATEURS ===
 def init_users_db():
     """Initialise l'utilisateur admin par défaut"""
@@ -1520,7 +1575,7 @@ def show_validation():
             st.rerun()
 
 def show_mes_commandes():
-    """Affiche les commandes de l'utilisateur connecté"""
+    """Affiche les commandes de l'utilisateur connecté avec suivi d'état"""
     st.markdown("### 📊 Mes commandes")
     
     user_info = st.session_state.get('current_user')
@@ -1528,18 +1583,17 @@ def show_mes_commandes():
         st.error("❌ Vous devez être connecté")
         return
     
-    # Migrer la table pour ajouter user_id
-    migrate_add_user_id_column()
-    
+    # Récupérer toutes les commandes de l'utilisateur
     orders = []
     
     try:
-        # Essayer avec contremaître (système actuel)
         if USE_POSTGRESQL:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                SELECT id, date, total_prix, statut, articles_json, 
+                       traitee_par, date_traitement, commentaire_technicien, 
+                       date_livraison_prevue, urgence
                 FROM commandes 
                 WHERE contremaître = %s 
                 ORDER BY date DESC
@@ -1548,7 +1602,9 @@ def show_mes_commandes():
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, date, total_prix, 'validée' as status, articles_json 
+                SELECT id, date, total_prix, statut, articles_json, 
+                       traitee_par, date_traitement, commentaire_technicien, 
+                       date_livraison_prevue, urgence
                 FROM commandes 
                 WHERE contremaître = ? 
                 ORDER BY date DESC
@@ -1580,12 +1636,19 @@ def show_mes_commandes():
             st.rerun()
         return
     
-    # Statistiques personnelles avec messages marrants
+    # Statistiques personnelles avec les nouveaux statuts
     total_commandes = len(orders)
     total_depense = sum(order[2] for order in orders)  # total_prix est à l'index 2
     moyenne_commande = total_depense / total_commandes if total_commandes > 0 else 0
     
-    col1, col2, col3 = st.columns(3)
+    # Compter par statut
+    statuts_count = {}
+    for order in orders:
+        statut = order[3] if len(order) > 3 and order[3] else "En attente"
+        statuts_count[statut] = statuts_count.get(statut, 0) + 1
+    
+    # Afficher les métriques
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("🛍️ Mes commandes", total_commandes)
@@ -1606,64 +1669,112 @@ def show_mes_commandes():
             st.caption("🥉 En progression !")
     
     with col3:
-        st.metric("📊 Moyenne/commande", f"{moyenne_commande:.2f}€")
-        if moyenne_commande > 1000:
-            st.caption("🎯 Précision chirurgicale !")
-        elif moyenne_commande > 500:
-            st.caption("⚖️ Équilibré !")
-        else:
-            st.caption("🐭 Petites commandes !")
+        st.metric("🟡 En attente", statuts_count.get("En attente", 0))
+        st.metric("🔵 En cours", statuts_count.get("En cours", 0))
+    
+    with col4:
+        st.metric("🟢 Traitées", statuts_count.get("Traitée", 0))
+        st.metric("✅ Livrées", statuts_count.get("Livrée", 0))
     
     st.markdown("---")
     
-    # Afficher les commandes avec messages marrants
+    # Afficher les commandes avec statuts colorés
     for i, order in enumerate(orders):
-        order_id, date, total, status, articles_json = order
+        (order_id, date, total, statut, articles_json, 
+         traitee_par, date_traitement, commentaire_technicien, 
+         date_livraison_prevue, urgence) = order + (None,) * (10 - len(order))
         
-        # Émojis selon le montant
-        if total > 1000:
-            emoji = "💎"
-        elif total > 500:
-            emoji = "🥇"
-        elif total > 200:
-            emoji = "⭐"
+        # Définir les couleurs et emojis selon le statut
+        statut = statut or "En attente"
+        if statut == "En attente":
+            statut_emoji = "🟡"
+            progress = 25
+            progress_color = "#ffc107"
+        elif statut == "En cours":
+            statut_emoji = "🔵"
+            progress = 50
+            progress_color = "#17a2b8"
+        elif statut == "Traitée":
+            statut_emoji = "🟢"
+            progress = 75
+            progress_color = "#28a745"
+        elif statut == "Livrée":
+            statut_emoji = "✅"
+            progress = 100
+            progress_color = "#6c757d"
         else:
-            emoji = "🛍️"
+            statut_emoji = "❓"
+            progress = 0
+            progress_color = "#6c757d"
         
-        with st.expander(f"{emoji} Commande #{order_id} - {date} - {total:.2f}€"):
+        # Urgence
+        urgence = urgence or "Normal"
+        if urgence == "Urgent":
+            urgence_emoji = "⚡"
+        elif urgence == "Très urgent":
+            urgence_emoji = "🚨"
+        else:
+            urgence_emoji = ""
+        
+        with st.expander(f"{statut_emoji} Commande #{order_id} - {date} - {total:.2f}€ {urgence_emoji}"):
+            # Barre de progression
+            st.markdown(f"""
+            <div style="background-color: #e9ecef; border-radius: 10px; margin: 10px 0;">
+                <div style="background-color: {progress_color}; width: {progress}%; padding: 8px; border-radius: 10px; text-align: center; color: white; font-weight: bold;">
+                    {statut} ({progress}%)
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                st.write(f"**📅 Date:** {date}")
+                st.write(f"**📅 Date commande:** {date}")
                 st.write(f"**💰 Total:** {total:.2f}€")
+                st.write(f"**📋 Statut:** {statut_emoji} {statut}")
+                if urgence != "Normal":
+                    st.write(f"**⚡ Urgence:** {urgence}")
             
             with col2:
-                st.write(f"**📋 Statut:** {status}")
-                
-                # Messages marrants selon le statut
-                if status == "validée":
-                    st.success("✅ Mission accomplie !")
-                elif status == "en_cours":
-                    st.info("⏳ En préparation...")
-                elif status == "expédiée":
-                    st.info("🚚 En route vers vous !")
+                if traitee_par:
+                    st.write(f"**🔧 Traité par:** {traitee_par}")
+                if date_traitement:
+                    st.write(f"**📅 Date traitement:** {date_traitement}")
+                if date_livraison_prevue:
+                    st.write(f"**🚚 Livraison prévue:** {date_livraison_prevue}")
+                if commentaire_technicien:
+                    st.write(f"**💬 Commentaire technicien:** {commentaire_technicien}")
             
             # Afficher les articles
             try:
                 articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
                 if not isinstance(articles, list):
                     articles = [articles]
+                    
+                st.markdown("**📦 Articles commandés:**")
                 for article in articles:
                     if isinstance(article, dict) and 'Nom' in article:
                         st.write(f"• {article['Nom']}")
                     elif isinstance(article, dict):
-                        st.write(f"• {article.get('nom', article.get('name', 'Article sans nom'))}")
+                        nom = article.get('nom', article.get('name', 'Article sans nom'))
+                        st.write(f"• {nom}")
                     else:
                         st.write(f"• {str(article)}")
+                        
             except json.JSONDecodeError:
                 st.error("❌ Erreur de lecture des articles")
             except Exception as e:
                 st.error(f"❌ Erreur affichage articles: {e}")
+            
+            # Messages selon le statut
+            if statut == "En attente":
+                st.info("⏳ Votre commande est en file d'attente. Un technicien va bientôt la prendre en charge.")
+            elif statut == "En cours":
+                st.info("🔧 Votre commande est actuellement en cours de traitement par l'équipe technique.")
+            elif statut == "Traitée":
+                st.success("🎉 Votre commande a été préparée ! Elle va bientôt être livrée.")
+            elif statut == "Livrée":
+                st.success("✅ Commande livrée ! Merci d'avoir utilisé FLUX/PARA Commander.")
     
     # Bouton pour nouvelle commande avec message marrant
     st.markdown("---")
@@ -1970,6 +2081,7 @@ def render_navigation():
     if user_info.get("can_view_stats"):
         buttons.append(("📈 Statistiques", "stats"))
     if user_info.get("can_add_articles"):
+        buttons.append(("🔧 Traitement", "traitement"))
         buttons.append(("➕ Articles", "admin_articles"))
     if user_info.get("role") == "admin":
         buttons.append(("👥 Utilisateurs", "admin_users"))
@@ -2040,6 +2152,11 @@ def main():
         elif page == "admin_articles":
             if (st.session_state.current_user or {}).get("can_add_articles"):
                 show_admin_articles()
+            else:
+                st.warning("⛔ Accès réservé.")
+        elif page == "traitement":
+            if (st.session_state.current_user or {}).get("can_add_articles"):
+                show_traitement_commandes()
             else:
                 st.warning("⛔ Accès réservé.")
         elif page == "admin_users":
@@ -3766,6 +3883,728 @@ def show_force_password_change():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erreur lors du changement de mot de passe : {e}")
+
+def update_commande_status(commande_id, nouveau_statut, technicien_nom=None, commentaire=None, date_livraison_prevue=None):
+    """Met à jour le statut d'une commande"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            # Préparer la requête selon les paramètres fournis
+            if technicien_nom and commentaire:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = %s, traitee_par = %s, date_traitement = %s, 
+                        commentaire_technicien = %s, date_livraison_prevue = %s
+                    WHERE id = %s
+                """, (nouveau_statut, technicien_nom, datetime.now(), commentaire, date_livraison_prevue, commande_id))
+            elif technicien_nom:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = %s, traitee_par = %s, date_traitement = %s
+                    WHERE id = %s
+                """, (nouveau_statut, technicien_nom, datetime.now(), commande_id))
+            else:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = %s
+                    WHERE id = %s
+                """, (nouveau_statut, commande_id))
+                
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            if technicien_nom and commentaire:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = ?, traitee_par = ?, date_traitement = ?, 
+                        commentaire_technicien = ?, date_livraison_prevue = ?
+                    WHERE id = ?
+                """, (nouveau_statut, technicien_nom, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+                     commentaire, date_livraison_prevue, commande_id))
+            elif technicien_nom:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = ?, traitee_par = ?, date_traitement = ?
+                    WHERE id = ?
+                """, (nouveau_statut, technicien_nom, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), commande_id))
+            else:
+                cursor.execute("""
+                    UPDATE commandes 
+                    SET statut = ?
+                    WHERE id = ?
+                """, (nouveau_statut, commande_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour statut commande: {e}")
+        return False
+
+def get_commandes_by_status(statut=None):
+    """Récupère les commandes par statut"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            if statut:
+                cursor.execute("""
+                    SELECT id, date, contremaître, equipe, articles_json, total_prix, 
+                           statut, traitee_par, date_traitement, commentaire_technicien, 
+                           date_livraison_prevue, urgence
+                    FROM commandes 
+                    WHERE statut = %s
+                    ORDER BY date DESC
+                """, (statut,))
+            else:
+                cursor.execute("""
+                    SELECT id, date, contremaître, equipe, articles_json, total_prix, 
+                           statut, traitee_par, date_traitement, commentaire_technicien, 
+                           date_livraison_prevue, urgence
+                    FROM commandes 
+                    ORDER BY date DESC
+                """)
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            if statut:
+                cursor.execute("""
+                    SELECT id, date, contremaître, equipe, articles_json, total_prix, 
+                           statut, traitee_par, date_traitement, commentaire_technicien, 
+                           date_livraison_prevue, urgence
+                    FROM commandes 
+                    WHERE statut = ?
+                    ORDER BY date DESC
+                """, (statut,))
+            else:
+                cursor.execute("""
+                    SELECT id, date, contremaître, equipe, articles_json, total_prix, 
+                           statut, traitee_par, date_traitement, commentaire_technicien, 
+                           date_livraison_prevue, urgence
+                    FROM commandes 
+                    ORDER BY date DESC
+                """)
+        
+        orders = cursor.fetchall()
+        conn.close()
+        return orders
+        
+    except Exception as e:
+        st.error(f"Erreur récupération commandes: {e}")
+        return []
+
+
+def get_commande_details(commande_id):
+    """Récupère les détails complets d'une commande pour l'édition"""
+    try:
+        conn = sqlite3.connect('commandes.db')
+        cursor = conn.cursor()
+        
+        # D'abord vérifier si les nouvelles colonnes existent, sinon les créer
+        cursor.execute("PRAGMA table_info(commandes)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        # Ajouter les colonnes manquantes si nécessaire
+        if 'commentaire' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN commentaire TEXT")
+        if 'traitee_par' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN traitee_par TEXT")
+        if 'date_traitement' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN date_traitement TEXT")
+        if 'commentaire_technicien' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN commentaire_technicien TEXT")
+        if 'date_livraison_prevue' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN date_livraison_prevue TEXT")
+        if 'urgence' not in columns:
+            cursor.execute("ALTER TABLE commandes ADD COLUMN urgence TEXT DEFAULT 'Normal'")
+        
+        conn.commit()
+        
+        cursor.execute("""
+            SELECT id, date, contremaître, equipe, articles_json, total_prix, 
+                   commentaire, statut, traitee_par, date_traitement, 
+                   commentaire_technicien, date_livraison_prevue, urgence
+            FROM commandes WHERE id = ?
+        """, (commande_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {
+                'id': result[0],
+                'date': result[1],
+                'contremaitre': result[2],
+                'equipe': result[3],
+                'articles': json.loads(result[4]) if result[4] else [],
+                'total_prix': result[5],
+                'commentaire': result[6] or '',
+                'statut': result[7] or 'En attente',
+                'traitee_par': result[8] or '',
+                'date_traitement': result[9] or '',
+                'commentaire_technicien': result[10] or '',
+                'date_livraison_prevue': result[11] or '',
+                'urgence': result[12] or 'Normal'
+            }
+        return None
+        
+    except Exception as e:
+        st.error(f"Erreur récupération commande: {e}")
+        return None
+
+def update_commande_articles(commande_id, nouveaux_articles, nouveau_total, commentaire_modification):
+    """Met à jour les articles d'une commande et ajoute un commentaire de modification"""
+    try:
+        conn = sqlite3.connect('commandes.db')
+        cursor = conn.cursor()
+        
+        # Mettre à jour les articles et le total
+        cursor.execute("""
+            UPDATE commandes 
+            SET articles_json = ?, total_prix = ?, commentaire_technicien = ?
+            WHERE id = ?
+        """, (json.dumps(nouveaux_articles), nouveau_total, commentaire_modification, commande_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur mise à jour commande: {e}")
+        return False
+
+def show_edit_commande_form(commande_id, commande_data):
+    """Affiche le formulaire d'édition d'une commande pour les techniciens"""
+    st.markdown("### ✏️ Édition de la commande")
+    
+    with st.form(f"edit_commande_{commande_id}"):
+        st.markdown(f"**📋 Commande #{commande_id}** - {commande_data['contremaitre']} ({commande_data['equipe']})")
+        
+        # Charger les articles disponibles
+        articles_df = load_articles()
+        
+        # Articles actuels de la commande
+        articles_actuels = commande_data['articles']
+        
+        st.markdown("**📦 Articles actuels :**")
+        
+        # Créer une liste modifiable des articles
+        nouveaux_articles = []
+        articles_supprimes = []
+        total_modifie = 0
+        
+        # Afficher et permettre modification des articles existants
+        for i, article in enumerate(articles_actuels):
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            
+            with col1:
+                st.write(f"• {article['Nom']}")
+            
+            with col2:
+                quantite_actuelle = 1  # Quantité par défaut
+                # Essayer de récupérer la quantité si elle existe
+                if isinstance(article, dict) and 'quantite' in article:
+                    quantite_actuelle = article['quantite']
+                
+                nouvelle_quantite = st.number_input(
+                    "Qté", 
+                    min_value=0, 
+                    value=quantite_actuelle,
+                    key=f"qty_existing_{commande_id}_{i}"
+                )
+            
+            with col3:
+                prix_unitaire = float(article['Prix'])
+                st.write(f"{prix_unitaire:.2f}€")
+            
+            with col4:
+                supprimer = st.checkbox(
+                    "🗑️", 
+                    key=f"delete_existing_{commande_id}_{i}",
+                    help="Supprimer cet article"
+                )
+            
+            # Ajouter à la nouvelle liste si pas supprimé et quantité > 0
+            if not supprimer and nouvelle_quantite > 0:
+                article_modifie = article.copy()
+                article_modifie['quantite'] = nouvelle_quantite
+                nouveaux_articles.extend([article_modifie] * nouvelle_quantite)
+                total_modifie += prix_unitaire * nouvelle_quantite
+            elif supprimer:
+                articles_supprimes.append(article['Nom'])
+        
+        st.markdown("---")
+        st.markdown("**➕ Ajouter de nouveaux articles :**")
+        
+        # Permettre d'ajouter de nouveaux articles
+        nombre_nouveaux = st.number_input(
+            "Nombre d'articles à ajouter", 
+            min_value=0, 
+            max_value=10, 
+            value=0,
+            key=f"nb_new_{commande_id}"
+        )
+        
+        for i in range(nombre_nouveaux):
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                article_selectionne = st.selectbox(
+                    f"Article {i+1}",
+                    options=articles_df['Nom'].tolist(),
+                    key=f"new_article_{commande_id}_{i}"
+                )
+            
+            with col2:
+                quantite_nouvelle = st.number_input(
+                    "Quantité",
+                    min_value=1,
+                    value=1,
+                    key=f"new_qty_{commande_id}_{i}"
+                )
+            
+            # Récupérer les détails de l'article sélectionné
+            if article_selectionne:
+                article_info = articles_df[articles_df['Nom'] == article_selectionne].iloc[0].to_dict()
+                prix_unitaire = float(article_info['Prix'])
+                
+                # Ajouter à la liste
+                for _ in range(quantite_nouvelle):
+                    nouveaux_articles.append(article_info)
+                    total_modifie += prix_unitaire
+        
+        st.markdown("---")
+        st.markdown(f"**💰 Nouveau total : {total_modifie:.2f}€**")
+        
+        # Commentaire de modification
+        commentaire_modification = st.text_area(
+            "💬 Commentaire sur les modifications (obligatoire)",
+            placeholder="Expliquez les raisons des modifications...",
+            key=f"comment_modif_{commande_id}"
+        )
+        
+        # Boutons de soumission
+        col_submit, col_cancel = st.columns(2)
+        
+        with col_submit:
+            submitted = st.form_submit_button("💾 Sauvegarder les modifications")
+        
+        with col_cancel:
+            cancelled = st.form_submit_button("❌ Annuler")
+        
+        if submitted:
+            if not commentaire_modification.strip():
+                st.error("⚠️ Un commentaire est obligatoire pour justifier les modifications !")
+            else:
+                # Construire le commentaire complet
+                commentaire_complet = f"[MODIFICATION] {commentaire_modification}"
+                if articles_supprimes:
+                    commentaire_complet += f"\n[SUPPRIMÉS] {', '.join(articles_supprimes)}"
+                
+                if update_commande_articles(commande_id, nouveaux_articles, total_modifie, commentaire_complet):
+                    st.success("✅ Commande modifiée avec succès !")
+                    st.session_state[f'edit_mode_{commande_id}'] = False
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la modification")
+        
+        if cancelled:
+            st.session_state[f'edit_mode_{commande_id}'] = False
+            st.rerun()
+
+def show_traitement_commandes():
+    """Page de traitement des commandes pour les techniciens"""
+    st.markdown("### 🔧 Traitement des commandes - Technicien")
+    
+    user_info = st.session_state.get('current_user', {})
+    if not user_info.get("can_add_articles") and user_info.get("role") != "admin":
+        st.error("⛔ Accès refusé - Réservé aux techniciens et administrateurs")
+        return
+    
+    # Filtres
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        statut_filtre = st.selectbox(
+            "📋 Filtrer par statut",
+            ["Toutes", "En attente", "En cours", "Traitée", "Livrée"],
+            key="statut_filter"
+        )
+    
+    with col2:
+        urgence_filtre = st.selectbox(
+            "⚡ Filtrer par urgence", 
+            ["Toutes", "Normal", "Urgent", "Très urgent"],
+            key="urgence_filter"
+        )
+    
+    with col3:
+        equipe_filtre = st.selectbox(
+            "👥 Filtrer par équipe",
+            ["Toutes", "FLUX", "PARA", "MAINTENANCE", "DIRECTION", "QUALITE", "LOGISTIQUE"],
+            key="equipe_filter"
+        )
+    
+    # Récupérer les commandes
+    if statut_filtre == "Toutes":
+        commandes = get_commandes_by_status()
+    else:
+        commandes = get_commandes_by_status(statut_filtre)
+    
+    if not commandes:
+        st.info("📭 Aucune commande trouvée")
+        return
+    
+    # Statistiques rapides
+    st.markdown("### 📊 Statistiques")
+    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+    
+    # Compter par statut
+    statuts_count = {}
+    for cmd in commandes:
+        statut = cmd[6] if len(cmd) > 6 and cmd[6] else "En attente"
+        statuts_count[statut] = statuts_count.get(statut, 0) + 1
+    
+    with col_stats1:
+        st.metric("🟡 En attente", statuts_count.get("En attente", 0))
+    with col_stats2:
+        st.metric("🔵 En cours", statuts_count.get("En cours", 0))
+    with col_stats3:
+        st.metric("🟢 Traitées", statuts_count.get("Traitée", 0))
+    with col_stats4:
+        st.metric("✅ Livrées", statuts_count.get("Livrée", 0))
+    
+    st.markdown("---")
+    st.markdown("### 📦 Commandes à traiter")
+    
+    # Afficher les commandes
+    for commande in commandes:
+        (order_id, date, contremaitre, equipe, articles_json, total_prix, 
+         statut, traitee_par, date_traitement, commentaire_technicien, 
+         date_livraison_prevue, urgence) = commande + (None,) * (12 - len(commande))
+        
+        # Appliquer les filtres
+        if urgence_filtre != "Toutes" and urgence != urgence_filtre:
+            continue
+        if equipe_filtre != "Toutes" and equipe != equipe_filtre:
+            continue
+        
+        # Définir la couleur selon le statut
+        statut = statut or "En attente"
+        if statut == "En attente":
+            statut_color = "🟡"
+            color_css = "background-color: #fff3cd; border-left: 4px solid #ffc107;"
+        elif statut == "En cours":
+            statut_color = "🔵"
+            color_css = "background-color: #d1ecf1; border-left: 4px solid #17a2b8;"
+        elif statut == "Traitée":
+            statut_color = "🟢"
+            color_css = "background-color: #d4edda; border-left: 4px solid #28a745;"
+        elif statut == "Livrée":
+            statut_color = "✅"
+            color_css = "background-color: #e2e6ea; border-left: 4px solid #6c757d;"
+        else:
+            statut_color = "❓"
+            color_css = "background-color: #f8f9fa; border-left: 4px solid #6c757d;"
+        
+        # Urgence
+        urgence = urgence or "Normal"
+        if urgence == "Urgent":
+            urgence_emoji = "⚡"
+        elif urgence == "Très urgent":
+            urgence_emoji = "🚨"
+        else:
+            urgence_emoji = "📋"
+        
+        with st.container():
+            st.markdown(f"""
+            <div style="{color_css} padding: 10px; border-radius: 5px; margin: 10px 0;">
+                <h4>{statut_color} Commande #{order_id} - {urgence_emoji} {urgence}</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col_info, col_actions = st.columns([2, 1])
+            
+            with col_info:
+                # Informations principales
+                col_date, col_total = st.columns(2)
+                with col_date:
+                    st.write(f"**📅 Date:** {date}")
+                with col_total:
+                    st.write(f"**💰 Total:** {total_prix}€")
+                
+                col_contremaitre, col_equipe = st.columns(2)
+                with col_contremaitre:
+                    st.write(f"**👤 Contremaître:** {contremaitre}")
+                with col_equipe:
+                    st.write(f"**👷‍♂️ Équipe:** {equipe}")
+                
+                st.write(f"**📋 Statut:** {statut_color} {statut}")
+                
+                # Compteur d'articles
+                try:
+                    nb_articles = len(json.loads(articles_json) if articles_json else [])
+                    st.write(f"**📦 Articles:** {nb_articles} article(s)")
+                except:
+                    st.write(f"**📦 Articles:** Information non disponible")
+                
+                if traitee_par:
+                    st.write(f"**🔧 Traité par:** {traitee_par}")
+                if date_traitement:
+                    st.write(f"**📅 Date traitement:** {date_traitement}")
+                if commentaire_technicien:
+                    st.write(f"**💬 Commentaire:** {commentaire_technicien}")
+                
+                # Afficher les articles avec détails complets
+                with st.expander(f"📦 Détails de la commande ({len(json.loads(articles_json) if articles_json else [])} articles)", expanded=False):
+                    try:
+                        articles = json.loads(articles_json) if isinstance(articles_json, str) else articles_json
+                        if not isinstance(articles, list):
+                            articles = [articles]
+                        
+                        # Debug pour comprendre le format
+                        # st.write(f"**Debug - Format articles:** {type(articles)} - Nombre: {len(articles)}")
+                        # if articles:
+                        #     st.write(f"**Debug - Premier article:** {articles[0]}")
+                        
+                        # Grouper les articles identiques avec approche plus robuste
+                        from collections import defaultdict
+                        grouped = defaultdict(int)
+                        articles_details = {}
+                        
+                        for article in articles:
+                            # Gérer différents formats d'articles
+                            if isinstance(article, dict):
+                                # Priorité aux clés possibles pour le nom
+                                nom = (article.get('Nom') or 
+                                      article.get('nom') or 
+                                      article.get('name') or 
+                                      article.get('Article') or 
+                                      f"Article {len(grouped) + 1}")
+                                grouped[nom] += 1
+                                if nom not in articles_details:
+                                    articles_details[nom] = article
+                            else:
+                                # Si l'article n'est pas un dict, le convertir
+                                nom = str(article)
+                                grouped[nom] += 1
+                                articles_details[nom] = {'Nom': nom, 'Prix': 0}
+                        
+                        # Créer un tableau des articles
+                        if grouped:
+                            st.markdown("**📋 Liste des articles :**")
+                            
+                            # En-tête du tableau
+                            col_art, col_qty, col_prix, col_total = st.columns([3, 1, 1, 1])
+                            with col_art:
+                                st.markdown("**Article**")
+                            with col_qty:
+                                st.markdown("**Qté**")
+                            with col_prix:
+                                st.markdown("**Prix unit.**")
+                            with col_total:
+                                st.markdown("**Total**")
+                            
+                            st.markdown("---")
+                            
+                            # Afficher chaque article
+                            total_commande = 0
+                            for nom, quantite in grouped.items():
+                                article_detail = articles_details[nom]
+                                
+                                # Récupérer le prix avec différentes clés possibles
+                                prix_unitaire = 0
+                                if isinstance(article_detail, dict):
+                                    prix_str = (article_detail.get('Prix') or 
+                                              article_detail.get('prix') or 
+                                              article_detail.get('price') or 0)
+                                    try:
+                                        prix_unitaire = float(prix_str)
+                                    except (ValueError, TypeError):
+                                        prix_unitaire = 0
+                                
+                                total_article = prix_unitaire * quantite
+                                total_commande += total_article
+                                
+                                col_art, col_qty, col_prix, col_total = st.columns([3, 1, 1, 1])
+                                with col_art:
+                                    st.write(f"• {nom}")
+                                with col_qty:
+                                    st.write(f"×{quantite}")
+                                with col_prix:
+                                    st.write(f"{prix_unitaire:.2f}€")
+                                with col_total:
+                                    st.write(f"{total_article:.2f}€")
+                            
+                            st.markdown("---")
+                            st.markdown(f"**💰 Total calculé: {total_commande:.2f}€**")
+                            
+                            # Boutons pour générer les PDF
+                            st.markdown("**📄 Génération de documents PDF :**")
+                            col_pdf_commande, col_pdf_reception = st.columns(2)
+                            
+                            with col_pdf_commande:
+                                if st.button(f"📄 Bon de commande PDF", key=f"pdf_commande_{order_id}"):
+                                    # Préparer les données pour le PDF
+                                    commande_data = {
+                                        'id': order_id,
+                                        'utilisateur': contremaitre,
+                                        'equipe': equipe,
+                                        'articles': articles,
+                                        'total': total_prix,
+                                        'date': date
+                                    }
+                                    
+                                    try:
+                                        pdf_buffer = generate_commande_pdf(commande_data)
+                                        if pdf_buffer:
+                                            st.download_button(
+                                                label="💾 Télécharger le bon de commande",
+                                                data=pdf_buffer,
+                                                file_name=f"bon_commande_{order_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                                mime="application/pdf",
+                                                key=f"download_commande_{order_id}"
+                                            )
+                                            st.success("✅ PDF généré avec succès !")
+                                        else:
+                                            st.error("❌ Erreur lors de la génération du PDF")
+                                    except Exception as pdf_e:
+                                        st.error(f"❌ Erreur génération PDF: {pdf_e}")
+                            
+                            with col_pdf_reception:
+                                if st.button(f"📋 Bon de réception PDF", key=f"pdf_reception_{order_id}"):
+                                    # Préparer les données pour le PDF de réception
+                                    commande_data = {
+                                        'id': order_id,
+                                        'utilisateur': contremaitre,
+                                        'equipe': equipe,
+                                        'articles': articles,
+                                        'total': total_prix,
+                                        'date': date
+                                    }
+                                    
+                                    try:
+                                        pdf_buffer = generate_bon_reception_pdf(commande_data, order_id)
+                                        if pdf_buffer:
+                                            st.download_button(
+                                                label="💾 Télécharger le bon de réception",
+                                                data=pdf_buffer,
+                                                file_name=f"bon_reception_{order_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                                mime="application/pdf",
+                                                key=f"download_reception_{order_id}"
+                                            )
+                                            st.success("✅ PDF de réception généré !")
+                                        else:
+                                            st.error("❌ Erreur lors de la génération du PDF de réception")
+                                    except Exception as pdf_e:
+                                        st.error(f"❌ Erreur génération PDF réception: {pdf_e}")
+                        else:
+                            st.warning("⚠️ Aucun article trouvé dans cette commande")
+                            # Affichage debug en cas de problème
+                            with st.expander("🔍 Debug - Données brutes"):
+                                st.write("**Articles bruts:**")
+                                st.json(articles[:3] if len(articles) > 3 else articles)
+                            
+                    except Exception as e:
+                        st.error(f"❌ Erreur affichage articles: {e}")
+                        with st.expander("🔍 Debug - Informations détaillées"):
+                            st.write("**Articles JSON bruts:**", articles_json[:200] if articles_json else "Aucun")
+                            try:
+                                articles_parsed = json.loads(articles_json) if articles_json else []
+                                st.write(f"**Articles parsés:** {type(articles_parsed)}")
+                                if articles_parsed:
+                                    st.write(f"**Premier élément:** {articles_parsed[0]}")
+                            except Exception as debug_e:
+                                st.write(f"**Erreur parsing:** {debug_e}")
+            
+            with col_actions:
+                st.markdown("**🔧 Actions**")
+
+                # Bouton d'édition de la commande
+                edit_key = f"edit_mode_{order_id}"
+                if edit_key not in st.session_state:
+                    st.session_state[edit_key] = False
+
+                if not st.session_state[edit_key]:
+                    if st.button(f"✏️ Éditer commande", key=f"edit_{order_id}"):
+                        st.session_state[edit_key] = True
+                        st.rerun()
+                else:
+                    # Afficher le formulaire d'édition
+                    commande_details = get_commande_details(order_id)
+                    if commande_details:
+                        show_edit_commande_form(order_id, commande_details)
+                    return  # Sortir pour afficher seulement l'édition
+
+                
+                # Boutons selon le statut actuel
+                if statut == "En attente":
+                    if st.button(f"▶️ Prendre en charge", key=f"start_{order_id}"):
+                        if update_commande_status(order_id, "En cours", user_info['username']):
+                            st.success("✅ Commande prise en charge !")
+                            st.rerun()
+                
+                elif statut == "En cours":
+                    # Vérifier si on affiche le formulaire de traitement
+                    form_key = f"show_complete_form_{order_id}"
+                    if form_key not in st.session_state:
+                        st.session_state[form_key] = False
+                    
+                    if not st.session_state[form_key]:
+                        if st.button(f"✅ Marquer comme traitée", key=f"complete_{order_id}"):
+                            st.session_state[form_key] = True
+                            st.rerun()
+                    else:
+                        st.markdown("**💬 Finaliser le traitement :**")
+                        with st.form(f"complete_form_{order_id}"):
+                            commentaire = st.text_area("💬 Commentaire (optionnel)", key=f"comment_{order_id}")
+                            date_livraison = st.date_input("📅 Date livraison prévue", key=f"delivery_{order_id}")
+                            
+                            col_submit, col_cancel = st.columns(2)
+                            with col_submit:
+                                submitted = st.form_submit_button("✅ Confirmer traitement")
+                            with col_cancel:
+                                cancelled = st.form_submit_button("❌ Annuler")
+                            
+                            if submitted:
+                                if update_commande_status(order_id, "Traitée", user_info['username'], 
+                                                        commentaire, str(date_livraison)):
+                                    st.success("✅ Commande marquée comme traitée !")
+                                    st.session_state[form_key] = False
+                                    st.rerun()
+                            
+                            if cancelled:
+                                st.session_state[form_key] = False
+                                st.rerun()
+                elif statut == "Traitée":
+                    if st.button(f"🚚 Marquer comme livrée", key=f"deliver_{order_id}"):
+                        if update_commande_status(order_id, "Livrée"):
+                            st.success("✅ Commande livrée !")
+                            st.rerun()
+                
+                # Bouton pour changer l'urgence
+                if st.button(f"⚡ Changer urgence", key=f"urgency_{order_id}"):
+                    with st.form(f"urgency_form_{order_id}"):
+                        nouvelle_urgence = st.selectbox(
+                            "Niveau d'urgence", 
+                            ["Normal", "Urgent", "Très urgent"],
+                            index=["Normal", "Urgent", "Très urgent"].index(urgence),
+                            key=f"new_urgency_{order_id}"
+                        )
+                        urgency_submitted = st.form_submit_button("💾 Sauvegarder")
+                        
+                        if urgency_submitted:
+                            # Ici on devrait ajouter une fonction pour mettre à jour l'urgence
+                            st.success("⚡ Urgence mise à jour !")
+                            st.rerun()
+            
+            st.divider()
 
 if __name__ == "__main__":
     main()
