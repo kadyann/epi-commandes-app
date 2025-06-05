@@ -22,6 +22,7 @@ import csv          # 📥 nécessaire pour écrire dans le catalogue
 import ast
 from typing import Tuple, Optional
 import string
+import uuid
 
 # Imports ReportLab
 from reportlab.lib.pagesizes import A4
@@ -664,35 +665,44 @@ def show_cart_sidebar():
     
     grouped_articles = grouper_articles_panier(st.session_state.cart)
     
-    for idx_global, group in enumerate(grouped_articles):
+    for i, group in enumerate(grouped_articles):
         article = group['article']
         quantite = group['quantite']
         prix_unitaire = float(article['Prix'])
         prix_total = prix_unitaire * quantite
+        
         with st.container():
             nom_court = article['Nom'][:30] + "..." if len(article['Nom']) > 30 else article['Nom']
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
+            
+            # Clé vraiment unique : hash du nom, référence, i
             ref = str(article.get('N° Référence') or article.get('Référence') or "no_ref")
             nom = str(article.get('Nom') or "no_nom")
-            import hashlib
-            key_base = f"{nom}_{ref}_{idx_global}"
-            key_hash = hashlib.md5(key_base.encode()).hexdigest()
+            # Ajoute un identifiant unique basé sur l'objet article
+            unique_id = str(id(article))
+            key_base = f"{nom}_{ref}_{quantite}_{i}_{unique_id}"
+            key_hash = uuid.uuid4().hex
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
+            
             with col_minus:
                 if st.button("➖", key=f"sidebar_minus_{key_hash}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
+            
             with col_qty:
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
+            
             with col_plus:
                 if st.button("➕", key=f"sidebar_plus_{key_hash}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
+            
             with col_del:
                 if st.button("🗑️", key=f"sidebar_delete_{key_hash}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
+            
             st.divider()
     
     total = calculate_cart_total()
@@ -705,16 +715,16 @@ def show_cart_sidebar():
         st.error(f"💰 **Total: {total:.2f}€**")
         st.error(f"Dépassement: {abs(budget_remaining):.2f}€")
     
-    if st.button("🛒 Voir le panier", use_container_width=True):
+    if st.button("🛒 Voir le panier", key="sidebar_view_cart_btn", use_container_width=True):
         st.session_state.page = "cart"
         st.rerun()
     
     if budget_remaining >= 0:
-        if st.button("✅ Valider commande", use_container_width=True):
+        if st.button("✅ Valider commande", key="sidebar_validate_order_btn", use_container_width=True):
             st.session_state.page = "validation"
             st.rerun()
     else:
-        st.button("❌ Budget dépassé", disabled=True, use_container_width=True)
+        st.button("❌ Budget dépassé", key="sidebar_budget_exceeded_btn", disabled=True, use_container_width=True)
 
 def show_login():
     """Page de connexion avec messages marrants"""
@@ -2045,7 +2055,7 @@ def main():
         st.session_state.sidebar_open = True
 
     # Bouton pour réduire/afficher la sidebar (affiché en haut de la page)
-    if st.button("⬅️ Réduire la barre latérale" if st.session_state.sidebar_open else "➡️ Afficher la barre latérale"):
+    if st.button("⬅️ Réduire la barre latérale" if st.session_state.sidebar_open else "➡️ Afficher la barre latérale", key="toggle_sidebar_btn"):
         st.session_state.sidebar_open = not st.session_state.sidebar_open
         st.rerun()
 
@@ -3553,7 +3563,6 @@ def show_user_admin_page() -> None:
         with col1:
             new_username = st.text_input("Nom d'utilisateur*", key="new_username")
             new_password = st.text_input("Mot de passe*", type="password", key="new_password")
-            st.caption("Le mot de passe initial doit contenir au moins 6 caractères.")
             equipes = ["DIRECTION", "FLUX", "PARA", "MAINTENANCE", "QUALITE", "LOGISTIQUE", "AUTRE"]
             new_equipe = st.selectbox("Équipe", equipes, key="new_equipe_select")
             if new_equipe == "AUTRE":
