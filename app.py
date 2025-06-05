@@ -664,43 +664,35 @@ def show_cart_sidebar():
     
     grouped_articles = grouper_articles_panier(st.session_state.cart)
     
-    for i, group in enumerate(grouped_articles):
+    for idx_global, group in enumerate(grouped_articles):
         article = group['article']
         quantite = group['quantite']
         prix_unitaire = float(article['Prix'])
         prix_total = prix_unitaire * quantite
-        
         with st.container():
             nom_court = article['Nom'][:30] + "..." if len(article['Nom']) > 30 else article['Nom']
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
-            
-            # Clé vraiment unique : hash du nom, référence, i
             ref = str(article.get('N° Référence') or article.get('Référence') or "no_ref")
             nom = str(article.get('Nom') or "no_nom")
             import hashlib
-            key_base = f"{nom}_{ref}_{i}"
+            key_base = f"{nom}_{ref}_{idx_global}"
             key_hash = hashlib.md5(key_base.encode()).hexdigest()
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
-            
             with col_minus:
                 if st.button("➖", key=f"sidebar_minus_{key_hash}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
-            
             with col_qty:
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
-            
             with col_plus:
                 if st.button("➕", key=f"sidebar_plus_{key_hash}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
-            
             with col_del:
                 if st.button("🗑️", key=f"sidebar_delete_{key_hash}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
-            
             st.divider()
     
     total = calculate_cart_total()
