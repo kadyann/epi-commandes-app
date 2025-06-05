@@ -150,7 +150,7 @@ def load_articles():
         df = df.dropna(subset=['Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
         df = df.dropna(subset=['Prix'])
-        df = df[df['Prix'] > 0]
+        df = df[df['Prix'] >= 0]  # CORRECTION: permet les articles à prix 0 (toners gratuits)
         df = df[df['Nom'].str.len() > 2]
         return df
     except FileNotFoundError:
@@ -2162,7 +2162,7 @@ def show_admin_articles():
         categories = [
             "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
             "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
-            "Oxycoupage", "Outil", "Lampe", "Marquage"
+            "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
         ]
         with st.form("ajout_article_form"):
             ref = st.text_input("N° Référence*")
@@ -2541,13 +2541,10 @@ def show_catalogue():
     else:
         st.error(f"🚨 Budget FLUX/PARA dépassé de {abs(budget_remaining):.2f}€ !")
     
-    with st.sidebar:
-        show_cart_sidebar()
-    
     categories = [
         "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
         "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
-        "Oxycoupage", "Outil", "Lampe", "Marquage"
+        "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
     ]
     
     if not st.session_state.get('selected_category'):
@@ -2562,7 +2559,7 @@ def show_catalogue():
     else:
         category = st.session_state.selected_category
         emoji = get_category_emoji(category)
-        if st.button("← Retour aux catégories"):
+        if st.button("← Retour aux catégories", key="back_to_categories_btn"):
             st.session_state.selected_category = None
             st.rerun()
         st.markdown(f"#### {emoji} {category}")
@@ -3137,7 +3134,7 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
 def get_category_emoji(category):
     emoji_map = {
         'Chaussures': '👟',
-        'Veste Blouson': '🧥',
+        'Veste Blouson': '🧥', 
         'Gants': '🧤',
         'Casque': '⛑️',
         'Lunette': '🥽',
@@ -3151,7 +3148,11 @@ def get_category_emoji(category):
         'Oxycoupage': '🔧',
         'Outil': '🛠️',
         'Lampe': '💡',
-        'Marquage': '✏️'
+        'Marquage': '✏️',
+        'Bureau': '🏢',
+        'Divers': '📦',
+        'Imprimante': '🖨️',
+        'EPI': '🛡️'
     }
     return emoji_map.get(category, '📦')
 
