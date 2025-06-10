@@ -7,7 +7,6 @@ N° Référence,Nom,Description,Prix,Unitée
 22789,Gilet Haute Visibilité Jaune Taille L,Gilet,25.5,Par gilet
 56734,Chaussure de sécurité S3 Taille 43,Chaussures,89.9,Par paire
 11223,Masque FFP2 Boîte de 20,Masque,15.0,Par boîte
-88901,Lunettes de Protection Anti-buée,Lunette,12.5,Par unité
 45612,Gants Anti-coupure Niveau 5 Taille 9,Gants,18.9,Par paire
 78934,Casque Ventilé Blanc avec jugulaire,Casque,35.0,Par casque
 23445,Chaussure montante S3 Taille 41,Chaussures,110.0,Par paire
@@ -15,22 +14,21 @@ N° Référence,Nom,Description,Prix,Unitée
 33221,Pantalon Haute Visibilité Taille 40,Pantalon,70.0,Par pantalon
 55667,Gilet de Sauvetage Orange,Gilet,45.0,Par gilet
 99887,Masque à gaz complet P3,Masque,85.0,Par unité
-44332,Lunettes teintées Sport,Lunette,8.5,Par unité
 77665,Gants Latex Jetables Boîte 100,Gants,12.0,Par boîte
 12389,Casque Isolant 1000V Rouge,Casque,65.0,Par casque
 40954,Chaussure de sécurité JALAS Taille 37,Chaussures,99.9,Par paire
 40955,Chaussure de sécurité JALAS Taille 38,Chaussures,99.9,Par paire
 40956,Chaussure de sécurité JALAS Taille 39,Chaussures,99.9,Par paire
 40957,Chaussure de sécurité JALAS Taille 40,Chaussures,99.9,Par paire
-40958,Chaussure de sécurité JALAS Taille 41,Chaussures,99.9,Par paire
-40959,Chaussure de sécurité JALAS Taille 42,Chaussures,99.9,Par paire
-40960,Chaussure de sécurité JALAS Taille 43,Chaussures,99.9,Par paire
-40961,Chaussure de sécurité JALAS Taille 44,Chaussures,99.9,Par paire
-40962,Chaussure de sécurité JALAS Taille 45,Chaussures,99.9,Par paire
-40963,Chaussure de sécurité JALAS Taille 46,Chaussures,99.9,Par paire
-40964,Chaussure de sécurité JALAS Taille 47,Chaussures,99.9,Par paire
-40965,Chaussure de sécurité JALAS Taille 48,Chaussures,99.9,Par paire
-40966,Chaussure de sécurité JALAS Taille 49,Chaussures,99.9,Par paire
+40959,Chaussure de sécurité JALAS Taille 41,Chaussures,99.9,Par paire
+40960,Chaussure de sécurité JALAS Taille 42,Chaussures,99.9,Par paire
+40961,Chaussure de sécurité JALAS Taille 43,Chaussures,99.9,Par paire
+40962,Chaussure de sécurité JALAS Taille 44,Chaussures,99.9,Par paire
+40963,Chaussure de sécurité JALAS Taille 45,Chaussures,99.9,Par paire
+40964,Chaussure de sécurité JALAS Taille 46,Chaussures,99.9,Par paire
+40965,Chaussure de sécurité JALAS Taille 47,Chaussures,99.9,Par paire
+40966,Chaussure de sécurité JALAS Taille 48,Chaussures,99.9,Par paire
+40967,Chaussure de sécurité JALAS Taille 49,Chaussures,99.9,Par paire
 40902,Chaussure de sécurité DIADORA Taille 36,Chaussures,107.4,Par paire
 40903,Chaussure de sécurité DIADORA Taille 37,Chaussures,107.4,Par paire
 40904,Chaussure de sécurité DIADORA Taille 38,Chaussures,107.4,Par paire
@@ -128,7 +126,6 @@ e-catalogue,Veste chauffante BOSCH,Veste Blouson,225.0,Par Veste
 40989,AMBRIC TPE 49100 Transparente,Lunette,10.5,Par unité
 40326,Sur lunette de protection,Lunette,10.5,Par unité
 41415,Bollé COBRA Transparente,Lunette,10.5,Par unité
-33961,Lunette Bollé Transparente,Lunette,7.98,Par unité
 34527,Pantalon de signalisation Orange Taille S,Pantalon,73.58,Par unité
 34529,Pantalon de signalisation Orange Taille M,Pantalon,73.58,Par unité
 34530,Pantalon de signalisation Orange Taille L,Pantalon,73.58,Par unité
