@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import os
+import csv
 from datetime import datetime, timedelta
 import io
 import time
@@ -122,6 +123,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Indicateur de build pour vérifier que le bon app.py est chargé
+st.caption("Build: local-" + datetime.now().strftime('%H:%M:%S'))
+
 st.markdown("""
 <style>
 @media (max-width: 768px) {
@@ -137,28 +141,36 @@ MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
 
 # Configuration base de données
 DATABASE_URL = "postgresql://postgres:XmqANsOjbMMrtzLvkoDhRueHSTUpocsQ@gondola.proxy.rlwy.net:15641/railway"
-USE_POSTGRESQL = True
+# Chemin absolu du CSV des articles (évite les erreurs de répertoire courant)
+ARTICLES_CSV_PATH = os.path.join(os.path.dirname(__file__), 'articles.csv')
+# Fichier SQLite local (fallback)
+DATABASE_PATH = "commandes.db"
+# Par défaut: PostgreSQL (prod). Pour forcer SQLite en local: USE_POSTGRESQL=false
+USE_POSTGRESQL = os.environ.get("USE_POSTGRESQL", "true").lower() in ("1", "true", "yes")
 
 # === CHARGEMENT DES DONNÉES ===
 @st.cache_data(ttl=60)
 def load_articles():
     """Charge les articles depuis le CSV - 5 colonnes strictes"""
     try:
-        df = pd.read_csv('articles.csv', encoding='utf-8', usecols=[0,1,2,3,4])
+        # Lecture robuste sans heuristics coûteuses: on lit les 5 premières colonnes au séparateur virgule
+        df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
         # Nettoyage classique
         df = df.dropna(subset=['Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
         df = df.dropna(subset=['Prix'])
-        df = df[df['Prix'] >= 0]  # CORRECTION: permet les articles à prix 0 (toners gratuits)
-        df = df[df['Nom'].str.len() > 2]
+        df = df[df['Prix'] >= 0]  # permet les articles à prix 0
+        # Accepter aussi les noms courts (ex: "10")
+        df['Nom'] = df['Nom'].astype(str).str.strip()
+        df = df[df['Nom'].str.len() >= 1]
         return df
     except FileNotFoundError:
         st.warning("📁 Fichier articles.csv non trouvé, création d'articles d'exemple")
         return create_sample_articles()
     except UnicodeDecodeError:
         try:
-            df = pd.read_csv('articles.csv', encoding='latin-1', usecols=[0,1,2,3,4])
+            df = pd.read_csv(ARTICLES_CSV_PATH, encoding='latin-1', usecols=[0,1,2,3,4])
             df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
             return df
         except Exception as e:
@@ -281,6 +293,15 @@ def init_database():
                 total_prix DECIMAL(10,2),
                 nb_articles INTEGER,
                 user_id INTEGER
+            )
+        """)
+        
+        # Table de persistance du panier
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_cart_sessions (
+                user_id INTEGER PRIMARY KEY,
+                cart_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -581,14 +602,78 @@ def convert_pandas_to_dict(article):
         'Description': str(article['Description'])
     }
 
+def _normalize_article(item: object) -> dict | None:
+    """Convertit un élément du panier en dict {Nom, Prix, Description} si possible."""
+    try:
+        if isinstance(item, dict):
+            if 'Prix' in item and 'Nom' in item:
+                # S'assure des bons types
+                item['Nom'] = str(item['Nom'])
+                item['Prix'] = float(item['Prix'])
+                if 'Description' in item:
+                    item['Description'] = str(item['Description'])
+                return item
+            # Certains formats {nom, prix}
+            if 'prix' in item and 'nom' in item:
+                return {
+                    'Nom': str(item['nom']),
+                    'Prix': float(item['prix']),
+                    'Description': str(item.get('description', '')),
+                }
+        elif isinstance(item, str):
+            # Essaye de décoder JSON
+            import json as _json
+            decoded = _json.loads(item)
+            return _normalize_article(decoded)
+    except Exception:
+        return None
+    return None
+
+def _normalize_cart(cart_obj: object) -> list[dict]:
+    """Normalise la liste du panier pour garantir une liste de dicts attendue par l'UI."""
+    import json as _json
+    normalized: list[dict] = []
+    try:
+        if isinstance(cart_obj, str):
+            cart_obj = _json.loads(cart_obj)
+        if isinstance(cart_obj, list):
+            for it in cart_obj:
+                art = _normalize_article(it)
+                if art is not None:
+                    normalized.append(art)
+    except Exception:
+        pass
+    return normalized
+
+def ensure_cart_normalized() -> None:
+    """Met à jour st.session_state.cart en liste d'articles normalisés."""
+    cart_obj = st.session_state.get('cart', [])
+    st.session_state.cart = _normalize_cart(cart_obj)
+
 def calculate_cart_total():
-    """Calcule le total du panier"""
-    return sum(float(item['Prix']) for item in st.session_state.cart)
+    """Calcule le total du panier en normalisant la structure si besoin."""
+    ensure_cart_normalized()
+    return sum(float(item.get('Prix', 0)) for item in st.session_state.cart if isinstance(item, dict))
 
 def add_to_cart(article, quantity=1):
     """Ajoute un article au panier avec vérification du budget"""
     if 'cart' not in st.session_state:
         st.session_state.cart = []
+    
+    # Normaliser l'article (gère pandas.Series -> dict)
+    try:
+        if isinstance(article, pd.Series):
+            article = {
+                'Nom': str(article.get('Nom', 'Article')),
+                'Prix': float(article.get('Prix', 0)),
+                'Description': str(article.get('Description', '')),
+            }
+        else:
+            normalized = _normalize_article(article)
+            if normalized:
+                article = normalized
+    except Exception:
+        pass
     
     # Calculer le nouveau total si on ajoute l'article
     current_total = calculate_cart_total()
@@ -635,6 +720,30 @@ def add_to_cart(article, quantity=1):
     for _ in range(quantity):
         st.session_state.cart.append(article)
     
+    # Sauvegarde panier (prod)
+    user = st.session_state.get('current_user') or {}
+    if user.get('id'):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cart_json = json.dumps(st.session_state.cart, ensure_ascii=False, default=str)
+            cursor.execute("DELETE FROM user_cart_sessions WHERE user_id = %s", (user['id'],))
+            cursor.execute("INSERT INTO user_cart_sessions (user_id, cart_json) VALUES (%s, %s)", (user['id'], cart_json))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+    # Sauvegarde locale
+    try:
+        with open('temp_session.json', 'w', encoding='utf-8') as f:
+            json.dump({
+                'user': st.session_state.get('current_user'),
+                'page': st.session_state.get('page', 'catalogue'),
+                'cart': st.session_state.get('cart', [])
+            }, f, ensure_ascii=False)
+    except Exception:
+        pass
+    
     # Messages de succès marrants
     messages_succes = [
         f"✅ {article['Nom']} ajouté ! Votre équipe sera ravie !",
@@ -668,17 +777,68 @@ def remove_from_cart(article):
     for i, item in enumerate(st.session_state.cart):
         if item['Nom'] == article['Nom']:
             st.session_state.cart.pop(i)
+            # Sauvegarde panier (prod)
+            user = st.session_state.get('current_user') or {}
+            if user.get('id'):
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    cart_json = json.dumps(st.session_state.cart, ensure_ascii=False, default=str)
+                    cursor.execute("DELETE FROM user_cart_sessions WHERE user_id = %s", (user['id'],))
+                    cursor.execute("INSERT INTO user_cart_sessions (user_id, cart_json) VALUES (%s, %s)", (user['id'], cart_json))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
             break
+    # Sauvegarde locale
+    try:
+        with open('temp_session.json', 'w', encoding='utf-8') as f:
+            json.dump({
+                'user': st.session_state.get('current_user'),
+                'page': st.session_state.get('page', 'catalogue'),
+                'cart': st.session_state.get('cart', [])
+            }, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 def remove_all_from_cart(article):
     """Retire tous les exemplaires d'un article du panier"""
     st.session_state.cart = [item for item in st.session_state.cart if item['Nom'] != article['Nom']]
+    # Sauvegarde panier (prod)
+    user = st.session_state.get('current_user') or {}
+    if user.get('id'):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cart_json = json.dumps(st.session_state.cart, ensure_ascii=False, default=str)
+            cursor.execute("DELETE FROM user_cart_sessions WHERE user_id = %s", (user['id'],))
+            cursor.execute("INSERT INTO user_cart_sessions (user_id, cart_json) VALUES (%s, %s)", (user['id'], cart_json))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+    # Sauvegarde locale
+    try:
+        with open('temp_session.json', 'w', encoding='utf-8') as f:
+            json.dump({
+                'user': st.session_state.get('current_user'),
+                'page': st.session_state.get('page', 'catalogue'),
+                'cart': st.session_state.get('cart', [])
+            }, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 # === FONCTIONS INTERFACE ===
 def init_session_state():
     """Initialise les variables de session"""
     if 'cart' not in st.session_state:
         st.session_state.cart = []
+    else:
+        try:
+            ensure_cart_normalized()
+        except Exception:
+            st.session_state.cart = []
     if 'page' not in st.session_state:
         st.session_state.page = "login"
     if 'budget_error' not in st.session_state:
@@ -689,6 +849,21 @@ def init_session_state():
         st.session_state.authenticated = False
     if 'current_user' not in st.session_state:
         st.session_state.current_user = None
+
+    # Restauration locale (fichier) pour éviter la déconnexion au refresh en local
+    try:
+        if not st.session_state.get('authenticated') and os.path.exists('temp_session.json'):
+            with open('temp_session.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data.get('user'):
+                st.session_state.authenticated = True
+                st.session_state.current_user = data['user']
+                if isinstance(data.get('cart'), list):
+                    st.session_state.cart = data['cart']
+                ensure_cart_normalized()
+                st.session_state.page = data.get('page', 'catalogue')
+    except Exception:
+        pass
 
 def show_budget_error_modal():
     """Affiche les erreurs de budget avec animation"""
@@ -731,17 +906,14 @@ def show_cart_sidebar():
             st.markdown(f"**{nom_court}**")
             st.markdown(f"💰 {prix_unitaire:.2f}€ × {quantite} = **{prix_total:.2f}€**")
             
-            # Clé vraiment unique : hash du nom, référence, i
+            # Clé STABLE basée sur nom/référence pour que les boutons fonctionnent correctement dans la sidebar
             ref = str(article.get('N° Référence') or article.get('Référence') or "no_ref")
             nom = str(article.get('Nom') or "no_nom")
-            # Ajoute un identifiant unique basé sur l'objet article
-            unique_id = str(id(article))
-            key_base = f"{nom}_{ref}_{quantite}_{i}_{unique_id}"
-            key_hash = uuid.uuid4().hex
+            key_suffix = re.sub(r'[^a-zA-Z0-9_]+', '_', f"{nom}_{ref}_{i}")
             col_minus, col_qty, col_plus, col_del = st.columns([1, 1, 1, 1])
             
             with col_minus:
-                if st.button("➖", key=f"sidebar_minus_{key_hash}", help="Réduire quantité"):
+                if st.button("➖", key=f"sidebar_minus_{key_suffix}", help="Réduire quantité"):
                     remove_from_cart(article)
                     st.rerun()
             
@@ -749,12 +921,12 @@ def show_cart_sidebar():
                 st.markdown(f"<div style='text-align: center; font-size: 14px; font-weight: bold; padding: 4px;'>{quantite}</div>", unsafe_allow_html=True)
             
             with col_plus:
-                if st.button("➕", key=f"sidebar_plus_{key_hash}", help="Augmenter quantité"):
+                if st.button("➕", key=f"sidebar_plus_{key_suffix}", help="Augmenter quantité"):
                     add_to_cart(article, 1)
                     st.rerun()
             
             with col_del:
-                if st.button("🗑️", key=f"sidebar_delete_{key_hash}", help="Supprimer"):
+                if st.button("🗑️", key=f"sidebar_delete_{key_suffix}", help="Supprimer"):
                     remove_all_from_cart(article)
                     st.rerun()
             
@@ -821,11 +993,34 @@ def show_login():
                     st.session_state.authenticated = True
                     st.session_state.current_user  = user
                     st.session_state.current_user['must_change_password'] = must_change
+                    
+                    # Charger le panier sauvegardé (prod)
+                    try:
+                        conn = psycopg2.connect(DATABASE_URL)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT cart_json FROM user_cart_sessions WHERE user_id = %s", (user['id'],))
+                        row = cursor.fetchone()
+                        conn.close()
+                        if row and row[0]:
+                            cart = json.loads(row[0])
+                            st.session_state.cart = _normalize_cart(cart)
+                    except Exception:
+                        pass
                     if must_change:
                         st.session_state.page = 'force_change_password'
                         st.rerun()
                     else:
                         st.session_state.page = "catalogue"
+                        # Sauvegarde session locale pour persister au refresh en local
+                        try:
+                            with open('temp_session.json', 'w', encoding='utf-8') as f:
+                                json.dump({
+                                    'user': user,
+                                    'page': st.session_state.page,
+                                    'cart': st.session_state.cart
+                                }, f, ensure_ascii=False)
+                        except Exception:
+                            pass
                         st.rerun()
                 else:
                     st.error("Hmm… Ces identifiants ne me disent rien !")
@@ -2091,6 +2286,12 @@ def render_navigation():
         with cols[i]:
             if page == "logout":
                 if st.button(label, use_container_width=True):
+                    # Nettoyage session locale
+                    try:
+                        if os.path.exists('temp_session.json'):
+                            os.remove('temp_session.json')
+                    except Exception:
+                        pass
                     st.session_state.authenticated = False
                     st.session_state.current_user = {}
                     st.session_state.cart = []
@@ -2237,6 +2438,7 @@ def show_main_app():
 
 def show_admin_articles():
     user_info = st.session_state.get('current_user') or {}
+    articles_df = load_articles()
     st.markdown("### 🛠️ Gestion des articles - Administration")
     tabs = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📤 Import CSV"])
 
@@ -2245,12 +2447,15 @@ def show_admin_articles():
         st.markdown("#### 🔍 Recherche dans le catalogue")
         query = st.text_input("Référence ou nom…")
         ref_col = get_ref_col(articles_df)
-        df_affiche = articles_df
+        df_affiche = articles_df.copy()
         if query:
-            df_affiche = articles_df[
-                articles_df["Nom"].str.contains(query, case=False, na=False)
-                | articles_df[ref_col].astype(str).str.contains(query)
-            ]
+            q = query.strip()
+            if q:
+                mask = (
+                    articles_df["Nom"].astype(str).str.contains(q, case=False, na=False)
+                    | articles_df[ref_col].astype(str).str.contains(q, case=False, na=False)
+                )
+                df_affiche = articles_df[mask]
         st.dataframe(df_affiche, use_container_width=True)
 
         # --- Affichage du bouton suppression pour admin, gestionnaire, technicien ---
@@ -2259,15 +2464,22 @@ def show_admin_articles():
             if df_affiche.empty:
                 st.info("Aucun article correspondant.")
             else:
-                label_options = (
-                    df_affiche[ref_col].astype(str) + " – " + df_affiche["Nom"]
-                ).tolist()
-                choix = st.selectbox("Choisissez l'article :", label_options)
-                ref_supp = choix.split(" – ")[0]
+                # Options uniques même en cas de doublons (réf/nom identiques)
+                options = [
+                    (int(idx), str(row[ref_col]), str(row["Nom"]))
+                    for idx, row in df_affiche.iterrows()
+                ]
+                selected = st.selectbox(
+                    "Choisissez l'article :",
+                    options,
+                    format_func=lambda t: f"{t[1]} – {t[2]}"
+                )
+                ref_supp = selected[1]
                 if st.button("🗑️ Supprimer", type="secondary"):
                     ok, msg = delete_article(ref_supp, ref_col)
                     if ok:
                         st.success(msg)
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(msg)
@@ -2278,7 +2490,7 @@ def show_admin_articles():
         st.markdown("#### ➕ Ajouter un nouvel article au catalogue")
         categories = [
             "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
-            "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
+            "Sécurité", "Pantalon", "Sous Veste", "Protection",
             "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
         ]
         with st.form("ajout_article_form"):
@@ -2307,7 +2519,7 @@ def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs
     Retourne (success, message).
     """
     try:
-        file_path = "articles.csv"
+        file_path = ARTICLES_CSV_PATH
         header = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
         file_exists = os.path.isfile(file_path)
         with open(file_path, mode="a", newline="", encoding="utf-8") as f:
@@ -2315,7 +2527,16 @@ def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs
             if not file_exists:
                 writer.writerow(header)
             # On n'enregistre que les 5 premiers champs, même si d'autres sont passés
-            writer.writerow([reference, nom, description, prix, unite])
+            try:
+                prix_str = f"{float(prix):.2f}"
+            except Exception:
+                prix_str = str(prix)
+            writer.writerow([str(reference), str(nom), str(description), prix_str, str(unite)])
+        try:
+            load_articles.clear()
+        except Exception:
+            pass
+        st.cache_data.clear()
         return True, "✅ Article ajouté au catalogue"
     except Exception as e:
         return False, f"❌ Erreur ajout article : {e}"
@@ -2327,7 +2548,7 @@ def import_articles_from_csv(new_articles_df):
         
         # Charger le CSV actuel
         try:
-            df_actuel = pd.read_csv('articles.csv')
+            df_actuel = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         except FileNotFoundError:
             df_actuel = pd.DataFrame(columns=['Référence', 'Nom', 'Prix', 'Catégorie', 'Description'])
         
@@ -2338,7 +2559,7 @@ def import_articles_from_csv(new_articles_df):
         df_combine = df_combine.drop_duplicates(subset=['Référence'], keep='last')
         
         # Sauvegarder
-        df_combine.to_csv('articles.csv', index=False)
+        df_combine.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
         
         # Recharger le cache
         st.cache_data.clear()
@@ -2660,7 +2881,7 @@ def show_catalogue():
     
     categories = [
         "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
-        "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
+        "Sécurité", "Pantalon", "Sous Veste", "Protection",
         "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
     ]
     
@@ -2680,7 +2901,15 @@ def show_catalogue():
             st.session_state.selected_category = None
             st.rerun()
         st.markdown(f"#### {emoji} {category}")
-        articles_category = articles_df[articles_df['Description'] == category]
+        # Regroupement automatique: Vestes Oxycoupeur et Gants chaleur/aluminisés -> Oxycoupage
+        normalized_df = articles_df.copy()
+        mask_oxy_veste = normalized_df['Nom'].str.contains(r'veste\s*oxycoupeur', case=False, na=False)
+        mask_gants_chaleur = normalized_df['Nom'].str.contains('gant', case=False, na=False) & (
+            normalized_df['Nom'].str.contains('chaleur|espuna|alumini', case=False, na=False)
+        )
+        normalized_df.loc[mask_oxy_veste | mask_gants_chaleur, 'Description'] = 'Oxycoupage'
+        
+        articles_category = normalized_df[normalized_df['Description'] == category]
         
         # Regrouper les articles par nom de base
         articles_groupes = {}
@@ -3543,12 +3772,18 @@ def ensure_users_table():
 def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, str]:
     """Supprime un article (référence) du fichier CSV puis invalide le cache."""
     try:
-        df = pd.read_csv("articles.csv")
+        df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
+        df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
         ref_col = ref_col or get_ref_col(df)
         if reference not in df[ref_col].astype(str).values:
             return False, "Référence introuvable"
         df = df[df[ref_col].astype(str) != str(reference)]
-        df.to_csv("articles.csv", index=False)
+        df.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
+        # Purger le cache pour recharger immédiatement
+        try:
+            load_articles.clear()
+        except Exception:
+            pass
         st.cache_data.clear()
         return True, "✅ Article supprimé avec succès"
     except Exception as e:

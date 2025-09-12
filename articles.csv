@@ -193,7 +193,6 @@ e-catalogue-004,Ciseaux Lyreco Budget 21cm,Bureau,0.56,Par unité
 e-catalogue-005,Roller de correction Tipp-Ex Mini P,Bureau,1.90,Par unité
 e-catalogue-006,Surligneur Stabilo Boss Original,Bureau,0.64,Par unité
 e-catalogue-007,Stylo Paper Mate avec réservoir,Bureau,1.02,Par unité
-e-catalogue-008,Post it,Bureau,16.59,Par paquet
 e-catalogue-009,Papier A3,Bureau,41.40,Par paquet
 82175,Toner C,Imprimante,0.00,Par unité
 82176,Toner K,Imprimante,0.00,Par unité
@@ -246,20 +245,17 @@ e-catalogue-034,Fineliner Pilot Pointe fine Bleu,Bureau,0.86,Par stylo
 e-catalogue-035,Porte mine Staedtler,Bureau,2.59,Par stylo
 e-catalogue-036,Balayette Spartex,Divers,2.76,Par unité
 e-catalogue-037,Stylo roller rétractable Pilot G2,Bureau,1.08,Par stylo
-
-# Liste blanche des catégories valides (à compléter selon ton besoin)
-CATEGORIES_VALIDES = {
-    "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
-    "Veste Oxycoupeur", "Sécurité", "Pantalon", "Sous Veste", "Protection",
-    "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers"
-}
-
-# Génère la liste des catégories dynamiquement, mais filtre sur la liste blanche
-all_cats = set(
-    cat for cat in articles_df['Description'].dropna().unique()
-    if cat in CATEGORIES_VALIDES
-)
-
-if st.button("← Retour aux catégories", key=f"retour_categories_{category}"):
-    st.session_state.selected_category = None
-    st.rerun()
+# Liste blanche des catégories valides (à compléter selon ton besoin),,,,
+CATEGORIES_VALIDES = {,,,,
+"    ""Chaussures"""," ""Veste Blouson"""," ""Gants"""," ""Casque"""," ""Lunette"""
+"    ""Veste Oxycoupeur"""," ""Sécurité"""," ""Pantalon"""," ""Sous Veste"""," ""Protection"""
+"    ""Oxycoupage"""," ""Outil"""," ""Lampe"""," ""Marquage"""," ""Bureau"""
+},,,,
+# Génère la liste des catégories dynamiquement, mais filtre sur la liste blanche,,,
+all_cats = set(,,,,
+    cat for cat in articles_df['Description'].dropna().unique(),,,,
+    if cat in CATEGORIES_VALIDES,,,,
+),,,,
+"if st.button(""← Retour aux catégories"""," key=f""retour_categories_{category}""):",,,
+    st.session_state.selected_category = None,,,,
+    st.rerun(),,,,
