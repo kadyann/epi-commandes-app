@@ -3362,11 +3362,8 @@ def show_catalogue():
             # Le reste va dans Divers (non-EPI)
             return 'Divers'
         
-        # Appliquer la recatégorisation
-        for idx, row in normalized_df.iterrows():
-            new_category = categorize_article(row['Nom'], row['Description'])
-            normalized_df.loc[idx, 'Description'] = new_category
-        
+        # Filtrer les articles par catégorie (SANS re-catégorisation forcée)
+        # Les articles gardent leur catégorie actuelle (respectant les déplacements manuels)
         articles_category = normalized_df[normalized_df['Description'] == category]
         
         # Regrouper les articles par nom de base
