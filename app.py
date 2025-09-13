@@ -2975,6 +2975,17 @@ def count_articles_in_category(category):
     def categorize_article(nom, description_actuelle):
         nom_lower = str(nom).lower()
         
+        # PRIORITÉ : Respecter les déplacements manuels
+        valid_categories = [
+            "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+            "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+            "Oxycoupage", "EPI Général", "No Touch",
+            "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
+        ]
+        if str(description_actuelle) in valid_categories:
+            return str(description_actuelle)
+        
+        # Sinon, routage automatique
         # Oxycoupage (priorité)
         if any(word in nom_lower for word in ['chaleur', 'espuna', 'alumini', 'oxycoup', 'tablier', 'cagoule', 'cache cou', 'guêtre', 'guetre', 'collier', 'allumeur', 'brosse', 'fire resistant', 'ignifug', 'sertissage']):
             return 'Oxycoupage'
@@ -3269,6 +3280,18 @@ def show_catalogue():
         def categorize_article(nom, description_actuelle):
             nom_lower = str(nom).lower()
             
+            # PRIORITÉ : Respecter les déplacements manuels
+            # Si l'article a été manuellement déplacé vers une catégorie valide, on la conserve
+            valid_categories = [
+                "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+                "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+                "Oxycoupage", "EPI Général", "No Touch",
+                "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
+            ]
+            if str(description_actuelle) in valid_categories:
+                return str(description_actuelle)
+            
+            # Sinon, appliquer le routage automatique pour les nouveaux articles
             # Oxycoupage (priorité car spécialisé)
             if any(word in nom_lower for word in ['chaleur', 'espuna', 'alumini', 'oxycoup', 'tablier', 
                                                   'cagoule', 'cache cou', 'guêtre', 'guetre', 'collier', 'allumeur', 
