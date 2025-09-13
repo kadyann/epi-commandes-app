@@ -278,7 +278,9 @@ def init_database():
                 couleur_preferee VARCHAR(30),
                 can_add_articles BOOLEAN DEFAULT FALSE,
                 can_view_stats BOOLEAN DEFAULT FALSE,
-                can_view_all_orders BOOLEAN DEFAULT FALSE
+                can_view_all_orders BOOLEAN DEFAULT FALSE,
+                can_move_articles BOOLEAN DEFAULT FALSE,
+                can_delete_articles BOOLEAN DEFAULT FALSE
             )
         """)
         
@@ -307,6 +309,9 @@ def init_database():
         
         conn.commit()
         conn.close()
+        
+        # Appeler la migration des permissions après création de la table
+        migrate_database()
         
     except Exception as e:
         st.error(f"Erreur initialisation base: {e}")
@@ -359,14 +364,16 @@ def migrate_database():
             permissions_columns = [
                 ('can_add_articles', 'BOOLEAN DEFAULT FALSE'),
                 ('can_view_stats', 'BOOLEAN DEFAULT FALSE'),
-                ('can_view_all_orders', 'BOOLEAN DEFAULT FALSE')
+                ('can_view_all_orders', 'BOOLEAN DEFAULT FALSE'),
+                ('can_move_articles', 'BOOLEAN DEFAULT FALSE'),
+                ('can_delete_articles', 'BOOLEAN DEFAULT FALSE')
             ]
             
             for column_name, column_type in permissions_columns:
                 try:
-                    cursor.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+                    cursor.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
                     conn.commit()
-                except:
+                except Exception as e:
                     pass  # La colonne existe déjà
                     
         else:
@@ -381,7 +388,9 @@ def migrate_database():
             new_columns = [
                 ('can_add_articles', 'INTEGER DEFAULT 0'),
                 ('can_view_stats', 'INTEGER DEFAULT 0'),
-                ('can_view_all_orders', 'INTEGER DEFAULT 0')
+                ('can_view_all_orders', 'INTEGER DEFAULT 0'),
+                ('can_move_articles', 'INTEGER DEFAULT 0'),
+                ('can_delete_articles', 'INTEGER DEFAULT 0')
             ]
             
             for column_name, column_type in new_columns:
@@ -518,10 +527,11 @@ def init_users_db():
             # Créer l'admin
             cursor.execute("""
                 INSERT INTO users (username, password_hash, role, equipe, fonction, 
-                                 couleur_preferee, can_add_articles, can_view_stats, can_view_all_orders) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 couleur_preferee, can_add_articles, can_view_stats, can_view_all_orders,
+                                 can_move_articles, can_delete_articles) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", 
-                  "DT770", True, True, True))
+                  "DT770", True, True, True, True, True))
         
         conn.commit()
         conn.close()
@@ -536,7 +546,8 @@ def authenticate_user(username, password):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, username, password_hash, role, equipe, fonction, 
-                   can_add_articles, can_view_stats, can_view_all_orders
+                   can_add_articles, can_view_stats, can_view_all_orders,
+                   can_move_articles, can_delete_articles
             FROM users WHERE username = %s
         """, (username,))
         row = cursor.fetchone()
@@ -545,7 +556,7 @@ def authenticate_user(username, password):
         if not row:
             return None
             
-        (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all) = row
+        (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all, c_move, c_delete) = row
         
         # Vérification du mot de passe hashé
         if pwd_hash and hashlib.sha256(password.encode()).hexdigest() == pwd_hash:
@@ -557,7 +568,9 @@ def authenticate_user(username, password):
                 "fonction": fonction,
                 "can_add_articles": bool(c_add),
                 "can_view_stats": bool(c_stats),
-                "can_view_all_orders": bool(c_all)
+                "can_view_all_orders": bool(c_all),
+                "can_move_articles": bool(c_move),
+                "can_delete_articles": bool(c_delete)
             }
         return None
         
@@ -2440,7 +2453,7 @@ def show_admin_articles():
     user_info = st.session_state.get('current_user') or {}
     articles_df = load_articles()
     st.markdown("### 🛠️ Gestion des articles - Administration")
-    tabs = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "📤 Import CSV"])
+    tabs = st.tabs(["📋 Catalogue actuel", "➕ Ajouter article", "🔄 Déplacer", "📤 Import CSV"])
 
     with tabs[0]:   # 📑 Catalogue actuel
         st.markdown("#### 📋 Articles actuels")
@@ -2458,8 +2471,8 @@ def show_admin_articles():
                 df_affiche = articles_df[mask]
         st.dataframe(df_affiche, use_container_width=True)
 
-        # --- Affichage du bouton suppression pour admin, gestionnaire, technicien ---
-        if user_info.get("role") == "admin" or user_info.get("fonction", "").lower() in ["technicien", "gestionnaire"]:
+        # --- Affichage du bouton suppression selon les permissions ---
+        if user_info.get("role") == "admin" or user_info.get("can_delete_articles", False):
             st.markdown("#### 🗑️ Supprimer un article")
             if df_affiche.empty:
                 st.info("Aucun article correspondant.")
@@ -2484,14 +2497,16 @@ def show_admin_articles():
                     else:
                         st.error(msg)
         else:
-            st.info("🔒 Suppression réservée aux administrateurs, gestionnaires et techniciens.")
+            st.info("🔒 Suppression réservée aux utilisateurs autorisés.")
 
     with tabs[1]:   # ➕ Ajouter article
         st.markdown("#### ➕ Ajouter un nouvel article au catalogue")
+        # Nouvelles catégories réorganisées par zone de protection
         categories = [
-            "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
-            "Sécurité", "Pantalon", "Sous Veste", "Protection",
-            "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
+            "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+            "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+            "Oxycoupage", "EPI Général", "No Touch",
+            "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
         ]
         with st.form("ajout_article_form"):
             ref = st.text_input("N° Référence*")
@@ -2509,7 +2524,56 @@ def show_admin_articles():
                 else:
                     st.error(msg)
 
-    with tabs[2]:   # 📤 Import CSV
+    with tabs[2]:   # 🔄 Déplacer
+        st.markdown("#### 🔄 Déplacer un article vers une autre catégorie")
+        
+        # Vérifier les permissions
+        if not (user_info.get("role") == "admin" or user_info.get("can_move_articles", False)):
+            st.info("🔒 Déplacement réservé aux utilisateurs autorisés.")
+        elif articles_df.empty:
+            st.info("Aucun article à déplacer.")
+        else:
+            # Sélection de l'article à déplacer
+            ref_col = get_ref_col(articles_df)
+            article_options = [
+                (int(idx), str(row[ref_col]), str(row["Nom"]), str(row["Description"]))
+                for idx, row in articles_df.iterrows()
+            ]
+            
+            selected_article = st.selectbox(
+                "Choisissez l'article à déplacer :",
+                article_options,
+                format_func=lambda t: f"{t[1]} - {t[2]} (actuellement: {t[3]})"
+            )
+            
+            # Sélection de la nouvelle catégorie
+            available_categories = [
+                "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+                "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+                "Oxycoupage", "EPI Général", "No Touch",
+                "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
+            ]
+            
+            current_category = selected_article[3]
+            new_category = st.selectbox(
+                "Nouvelle catégorie :",
+                available_categories,
+                index=available_categories.index(current_category) if current_category in available_categories else 0
+            )
+            
+            if new_category != current_category:
+                if st.button("🔄 Déplacer l'article", type="primary"):
+                    success, message = move_article_category(selected_article[1], new_category)
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+            else:
+                st.info("Sélectionnez une catégorie différente pour déplacer l'article.")
+
+    with tabs[3]:   # 📤 Import CSV
         # ... code existant ...
         pass  # (inchangé)
 
@@ -2587,7 +2651,11 @@ def show_user_management():
         is_current_admin = current_user.get('role') == 'admin'
         
         for user in users:
-            user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
+            if len(user) == 8:
+                user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role = user
+                can_move_articles, can_delete_articles = False, False
+            else:
+                user_id, username, equipe, fonction, can_add_articles, can_view_stats, can_view_all_orders, role, can_move_articles, can_delete_articles = user
             # Récupérer le montant total des commandes de cet utilisateur
             total_montant = 0
             nb_cmds = 0
@@ -2638,11 +2706,21 @@ def show_user_management():
                                                         value=bool(can_view_all_orders),
                                                         key=f"orders_{user_id}")
                         
+                        new_can_move = st.checkbox("🔄 Peut déplacer des articles", 
+                                                 value=bool(can_move_articles),
+                                                 key=f"move_{user_id}")
+                        
+                        new_can_delete = st.checkbox("🗑️ Peut supprimer des articles", 
+                                                   value=bool(can_delete_articles),
+                                                   key=f"delete_{user_id}")
+                        
                         if st.form_submit_button("💾 Sauvegarder permissions", use_container_width=True):
                             new_permissions = {
                                 'can_add_articles': new_can_add,
                                 'can_view_stats': new_can_stats,
-                                'can_view_all_orders': new_can_all_orders
+                                'can_view_all_orders': new_can_all_orders,
+                                'can_move_articles': new_can_move,
+                                'can_delete_articles': new_can_delete
                             }
                             
                             if update_user_permissions(user_id, new_permissions):
@@ -2867,33 +2945,316 @@ def assign_permissions_by_function(username, fonction):
         st.error(f"Erreur attribution permissions: {e}")
         return False
 
+def search_articles_globally(query):
+    """Recherche intelligente dans tous les articles"""
+    articles_df = load_articles()
+    if articles_df.empty:
+        return articles_df
+    
+    query_lower = query.lower().strip()
+    ref_col = get_ref_col(articles_df)
+    
+    # Recherche dans plusieurs champs
+    mask = (
+        articles_df['Nom'].astype(str).str.contains(query_lower, case=False, na=False) |
+        articles_df[ref_col].astype(str).str.contains(query_lower, case=False, na=False) |
+        articles_df['Description'].astype(str).str.contains(query_lower, case=False, na=False)
+    )
+    
+    return articles_df[mask]
+
+def count_articles_in_category(category):
+    """Compte les articles dans une catégorie après routage automatique"""
+    articles_df = load_articles()
+    if articles_df.empty:
+        return 0
+    
+    # Appliquer le même routage que dans le catalogue
+    normalized_df = articles_df.copy()
+    
+    def categorize_article(nom, description_actuelle):
+        nom_lower = str(nom).lower()
+        
+        # Oxycoupage (priorité)
+        if any(word in nom_lower for word in ['chaleur', 'espuna', 'alumini', 'oxycoup', 'tablier', 'cagoule', 'cache cou', 'guêtre', 'guetre', 'collier', 'allumeur', 'brosse', 'fire resistant', 'ignifug', 'sertissage']):
+            return 'Oxycoupage'
+        # Protection Tête
+        if any(word in nom_lower for word in ['casque', 'heaume', 'protection tête', 'jugulaire']):
+            return 'Protection Tête'
+        # Protection Auditive
+        if any(word in nom_lower for word in ['bouchon', 'oreille', 'auditif', 'antibruit']):
+            return 'Protection Auditive'
+        # Protection Oculaire
+        if any(word in nom_lower for word in ['lunette', 'oculaire', 'visière', 'deltaplus', 'ambric', 'bollé', 'bolle', 'cobra', 'transparente', 'pacaya', 'tracpsi']):
+            return 'Protection Oculaire'
+        # Protection Respiratoire
+        if any(word in nom_lower for word in ['masque', 'respiratoire', 'filtre', 'cartouche']):
+            return 'Protection Respiratoire'
+        # Protection Main
+        if any(word in nom_lower for word in ['gant', 'main', 'protection main', 'anti coupure', 'lebon', 'wintersafe', 'metalfit']):
+            return 'Protection Main'
+        # Protection Pied
+        if any(word in nom_lower for word in ['chaussure', 'botte', 'sabot', 'pied', 'semelle', 'uvex', 'hydroflex', 'atlas', 'klima']):
+            return 'Protection Pied'
+        # Vêtements de protection
+        if any(word in nom_lower for word in ['veste', 'blouson', 'gilet', 'pantalon', 'combinaison', 'manchette']):
+            if any(word in nom_lower for word in ['haute visibilité', 'fluo', 'réfléchissant']):
+                return 'Vêtements Haute Visibilité'
+            return 'Protection Corps'
+        # Outils
+        if any(word in nom_lower for word in ['outil', 'clé', 'tournevis', 'marteau', 'perceuse', 'scie', 'couteau', 'lame', 'retractable', 'composition maintenance', 'facom', 'trousse', 'enrouleur', 'câble', 'prises', 'mètre', 'pliant', 'mesure']):
+            return 'Outils'
+        # Éclairage
+        if any(word in nom_lower for word in ['lampe', 'éclairage', 'torche', 'projecteur']):
+            return 'Éclairage'
+        # Marquage
+        if any(word in nom_lower for word in ['marquage', 'étiquette', 'panneau', 'peinture', 'bombe', 'craie', 'markal', 'edding', 'pinceau', 'virole']):
+            return 'Marquage'
+        # Bureau
+        if any(word in nom_lower for word in ['bureau', 'papier', 'stylo', 'classeur', 'agraffeuse', 'imprimante', 'carnet', 'oxford', 'spirale', 'ciseaux', 'roller', 'correction', 'tipp-ex', 'surligneur', 'stabilo', 'toner', 'bostitch', 'taille crayon', 'post it', 'recharge', 'graphite', 'agrafes', 'porte mine', 'staedtler', 'fineliner', 'pilot']):
+            return 'Bureau'
+        # Nettoyage
+        if any(word in nom_lower for word in ['nettoyage', 'produit', 'détergent', 'désinfectant', 'sac poubelle', 'balai', 'manche', 'conteneur', 'lavette', 'microfibre', 'balayette', 'spartex', 'eau de javel', 'spray', 'tugalin', 'glasreiniger']):
+            return 'Nettoyage'
+        # Hygiène
+        if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'gel']):
+            return 'Hygiène'
+        # No Touch
+        if any(word in nom_lower for word in ['aimant', 'neodyme', 'puissant']):
+            return 'No Touch'
+        # EPI Général
+        if any(word in nom_lower for word in ['protection', 'sécurité', 'epi', 'équipement']):
+            return 'EPI Général'
+        return 'Divers'
+    
+    # Appliquer la recatégorisation
+    for idx, row in normalized_df.iterrows():
+        new_category = categorize_article(row['Nom'], row['Description'])
+        normalized_df.loc[idx, 'Description'] = new_category
+    
+    return len(normalized_df[normalized_df['Description'] == category])
+
+def display_articles_grid(articles_df):
+    """Affiche les articles en grille moderne avec cartes"""
+    if articles_df.empty:
+        st.info("Aucun article à afficher.")
+        return
+    
+    # Filtres avancés
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
+    with col_filter1:
+        price_range = st.select_slider(
+            "💰 Gamme de prix",
+            options=["Tous", "0-10€", "10-50€", "50-100€", "100€+"],
+            value="Tous"
+        )
+    with col_filter2:
+        sort_by = st.selectbox(
+            "📊 Trier par",
+            ["Nom", "Prix croissant", "Prix décroissant", "Référence"]
+        )
+    with col_filter3:
+        view_mode = st.radio(
+            "👁️ Affichage",
+            ["Grille", "Liste"],
+            horizontal=True
+        )
+    
+    # Appliquer les filtres
+    filtered_df = articles_df.copy()
+    
+    # Filtre prix
+    if price_range != "Tous":
+        if price_range == "0-10€":
+            filtered_df = filtered_df[filtered_df['Prix'] <= 10]
+        elif price_range == "10-50€":
+            filtered_df = filtered_df[(filtered_df['Prix'] > 10) & (filtered_df['Prix'] <= 50)]
+        elif price_range == "50-100€":
+            filtered_df = filtered_df[(filtered_df['Prix'] > 50) & (filtered_df['Prix'] <= 100)]
+        elif price_range == "100€+":
+            filtered_df = filtered_df[filtered_df['Prix'] > 100]
+    
+    # Tri
+    if sort_by == "Prix croissant":
+        filtered_df = filtered_df.sort_values('Prix')
+    elif sort_by == "Prix décroissant":
+        filtered_df = filtered_df.sort_values('Prix', ascending=False)
+    elif sort_by == "Référence":
+        ref_col = get_ref_col(filtered_df)
+        filtered_df = filtered_df.sort_values(ref_col)
+    else:  # Nom
+        filtered_df = filtered_df.sort_values('Nom')
+    
+    # Affichage selon le mode
+    if view_mode == "Grille":
+        display_grid_view(filtered_df)
+    else:
+        display_list_view(filtered_df)
+
+def display_grid_view(articles_df):
+    """Affichage en grille moderne avec cartes produits"""
+    ref_col = get_ref_col(articles_df)
+    
+    # Pagination
+    items_per_page = 12
+    total_items = len(articles_df)
+    total_pages = (total_items + items_per_page - 1) // items_per_page
+    
+    if total_pages > 1:
+        col_prev, col_info, col_next = st.columns([1, 2, 1])
+        
+        current_page = st.session_state.get('current_page', 1)
+        
+        with col_prev:
+            if st.button("← Précédent", disabled=current_page <= 1):
+                st.session_state.current_page = max(1, current_page - 1)
+                st.rerun()
+        
+        with col_info:
+            st.markdown(f"<div style='text-align: center; padding: 8px;'>Page {current_page} sur {total_pages}</div>", unsafe_allow_html=True)
+        
+        with col_next:
+            if st.button("Suivant →", disabled=current_page >= total_pages):
+                st.session_state.current_page = min(total_pages, current_page + 1)
+                st.rerun()
+    else:
+        current_page = 1
+    
+    # Calculer les indices pour la pagination
+    start_idx = (current_page - 1) * items_per_page
+    end_idx = start_idx + items_per_page
+    page_articles = articles_df.iloc[start_idx:end_idx]
+    
+    # Affichage en grille 3 colonnes
+    cols = st.columns(3)
+    for idx, (_, article) in enumerate(page_articles.iterrows()):
+        with cols[idx % 3]:
+            # Carte produit moderne
+            with st.container():
+                st.markdown(f"""
+                <div style='
+                    border: 1px solid #e0e0e0; 
+                    border-radius: 10px; 
+                    padding: 15px; 
+                    margin: 10px 0;
+                    background: white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                '>
+                    <h4 style='margin: 0 0 10px 0; color: #1f2937;'>{article['Nom'][:40]}{'...' if len(article['Nom']) > 40 else ''}</h4>
+                    <p style='margin: 5px 0; color: #6b7280; font-size: 0.9em;'>Réf: {article[ref_col]}</p>
+                    <p style='margin: 5px 0; color: #6b7280; font-size: 0.9em;'>Cat: {article['Description']}</p>
+                    <div style='margin: 10px 0;'>
+                        <span style='font-size: 1.2em; font-weight: bold; color: #059669;'>{article['Prix']:.2f}€</span>
+                        <span style='color: #6b7280; font-size: 0.9em;'> / {article['Unitée']}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Boutons d'action
+                col_qty, col_add = st.columns([1, 2])
+                with col_qty:
+                    qty = st.number_input("Qté", min_value=1, max_value=50, value=1, key=f"qty_grid_{idx}_{article[ref_col]}")
+                with col_add:
+                    if st.button("🛒 Ajouter", key=f"add_grid_{idx}_{article[ref_col]}", use_container_width=True):
+                        success = add_to_cart(article, qty)
+                        if success:
+                            st.toast(f"✅ {qty}x {article['Nom'][:20]}... ajouté !", icon="✅")
+                        st.rerun()
+
+def display_list_view(articles_df):
+    """Affichage en liste compacte"""
+    ref_col = get_ref_col(articles_df)
+    
+    for idx, (_, article) in enumerate(articles_df.iterrows()):
+        with st.container():
+            col1, col2, col3 = st.columns([3, 1, 1])
+            
+            with col1:
+                st.markdown(f"**{article['Nom']}**")
+                st.caption(f"Réf: {article[ref_col]} • {article['Description']}")
+            
+            with col2:
+                st.markdown(f"**{article['Prix']:.2f}€**")
+                st.caption(f"{article['Unitée']}")
+            
+            with col3:
+                qty = st.number_input("", min_value=1, max_value=50, value=1, key=f"qty_list_{idx}_{article[ref_col]}", label_visibility="collapsed")
+                if st.button("➕", key=f"add_list_{idx}_{article[ref_col]}", use_container_width=True):
+                    add_to_cart(article, qty)
+                    st.rerun()
+            
+            st.divider()
+
 def show_catalogue():
-    """Affiche le catalogue des articles"""
+    """Affiche le catalogue des articles avec interface moderne"""
     st.markdown("### 🛡️ Catalogue FLUX/PARA")
     
     budget_used = calculate_cart_total()
     budget_remaining = MAX_CART_AMOUNT - budget_used
     
-    if budget_remaining > 0:
-        st.success(f"💰 Budget disponible: {budget_remaining:.2f}€ (secteur FLUX/PARA)")
-    else:
-        st.error(f"🚨 Budget FLUX/PARA dépassé de {abs(budget_remaining):.2f}€ !")
+    # Affichage du budget avec style moderne
+    col_budget, col_search = st.columns([1, 2])
+    with col_budget:
+        if budget_remaining > 0:
+            st.success(f"💰 Budget: {budget_remaining:.2f}€")
+        else:
+            st.error(f"🚨 Dépassé: {abs(budget_remaining):.2f}€")
     
+    with col_search:
+        # Barre de recherche globale moderne
+        search_query = st.text_input(
+            "🔍 Recherche globale", 
+            placeholder="Tapez un nom, référence, marque...",
+            help="Recherche dans tous les articles du catalogue"
+        )
+    
+    # Nouvelles catégories réorganisées par zone de protection
     categories = [
-        "Chaussures", "Veste Blouson", "Gants", "Casque", "Lunette", "Gilet", "Masque",
-        "Sécurité", "Pantalon", "Sous Veste", "Protection",
-        "Oxycoupage", "Outil", "Lampe", "Marquage", "Bureau", "Divers", "Imprimante", "EPI"
+        "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+        "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+        "Oxycoupage", "EPI Général", "No Touch",
+        "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
     ]
     
-    if not st.session_state.get('selected_category'):
+    # Recherche globale prioritaire
+    if search_query and search_query.strip():
+        st.markdown(f"### 🔍 Résultats pour '{search_query}'")
+        search_results = search_articles_globally(search_query)
+        if search_results.empty:
+            st.info("Aucun article trouvé pour cette recherche.")
+        else:
+            display_articles_grid(search_results)
+    elif not st.session_state.get('selected_category'):
         st.markdown("### 📋 Sélectionnez une catégorie")
-        cols = st.columns(3)
+        
+        # Boutons style icône avec émojis industriels
+        categories = [
+            "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+            "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+            "Oxycoupage", "EPI Général", "No Touch",
+            "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
+        ]
+        
+        # Style pour boutons plus carrés
+        st.markdown("""
+        <style>
+        .stButton > button {
+            height: 80px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            white-space: normal;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        cols = st.columns(4)
         for i, category in enumerate(categories):
-            with cols[i % 3]:
+            with cols[i % 4]:
                 emoji = get_category_emoji(category)
                 if st.button(f"{emoji} {category}", key=f"cat_{category}", use_container_width=True):
                     st.session_state.selected_category = category
                     st.rerun()
+        
     else:
         category = st.session_state.selected_category
         emoji = get_category_emoji(category)
@@ -2901,13 +3262,87 @@ def show_catalogue():
             st.session_state.selected_category = None
             st.rerun()
         st.markdown(f"#### {emoji} {category}")
-        # Regroupement automatique: Vestes Oxycoupeur et Gants chaleur/aluminisés -> Oxycoupage
+        # Système de regroupement automatique par mots-clés
         normalized_df = articles_df.copy()
-        mask_oxy_veste = normalized_df['Nom'].str.contains(r'veste\s*oxycoupeur', case=False, na=False)
-        mask_gants_chaleur = normalized_df['Nom'].str.contains('gant', case=False, na=False) & (
-            normalized_df['Nom'].str.contains('chaleur|espuna|alumini', case=False, na=False)
-        )
-        normalized_df.loc[mask_oxy_veste | mask_gants_chaleur, 'Description'] = 'Oxycoupage'
+        
+        # Routage intelligent basé sur les mots-clés dans les noms
+        def categorize_article(nom, description_actuelle):
+            nom_lower = str(nom).lower()
+            
+            # Oxycoupage (priorité car spécialisé)
+            if any(word in nom_lower for word in ['chaleur', 'espuna', 'alumini', 'oxycoup', 'tablier', 
+                                                  'cagoule', 'cache cou', 'guêtre', 'guetre', 'collier', 'allumeur', 
+                                                  'brosse', 'fire resistant', 'ignifug', 'sertissage']):
+                return 'Oxycoupage'
+            
+            # Protection Tête
+            if any(word in nom_lower for word in ['casque', 'heaume', 'protection tête']):
+                return 'Protection Tête'
+            
+            # Protection Auditive
+            if any(word in nom_lower for word in ['bouchon', 'oreille', 'auditif', 'antibruit']):
+                return 'Protection Auditive'
+            
+            # Protection Oculaire
+            if any(word in nom_lower for word in ['lunette', 'oculaire', 'visière', 'deltaplus', 'ambric', 'bollé', 'bolle', 'cobra', 'transparente', 'pacaya', 'tracpsi']):
+                return 'Protection Oculaire'
+            
+            # Protection Respiratoire
+            if any(word in nom_lower for word in ['masque', 'respiratoire', 'filtre', 'cartouche']):
+                return 'Protection Respiratoire'
+            
+            # Protection Main
+            if any(word in nom_lower for word in ['gant', 'main', 'protection main', 'anti coupure', 'lebon', 'wintersafe', 'metalfit']):
+                return 'Protection Main'
+            
+            # Protection Pied
+            if any(word in nom_lower for word in ['chaussure', 'botte', 'sabot', 'pied', 'semelle', 'uvex', 'hydroflex', 'atlas', 'klima']):
+                return 'Protection Pied'
+            
+            # Protection Tête (ajout jugulaire)
+            if any(word in nom_lower for word in ['jugulaire']):
+                return 'Protection Tête'
+            
+            # Vêtements de protection
+            if any(word in nom_lower for word in ['veste', 'blouson', 'gilet', 'pantalon', 'combinaison', 'manchette']):
+                if any(word in nom_lower for word in ['haute visibilité', 'fluo', 'réfléchissant']):
+                    return 'Vêtements Haute Visibilité'
+                return 'Protection Corps'
+            
+            # Autres catégories spécialisées (NON-EPI)
+            if any(word in nom_lower for word in ['outil', 'clé', 'tournevis', 'marteau', 'perceuse', 'scie', 'couteau', 'lame', 'retractable', 'composition maintenance', 'facom', 'trousse', 'enrouleur', 'câble', 'prises']):
+                return 'Outils'
+            if any(word in nom_lower for word in ['lampe', 'éclairage', 'torche', 'projecteur']):
+                return 'Éclairage'
+            if any(word in nom_lower for word in ['marquage', 'étiquette', 'panneau', 'peinture', 'bombe', 'craie', 'markal', 'edding', 'pinceau', 'virole']):
+                return 'Marquage'
+            if any(word in nom_lower for word in ['bureau', 'papier', 'stylo', 'classeur', 'agraffeuse', 'imprimante', 'carnet', 'oxford', 'spirale', 'ciseaux', 'roller', 'correction', 'tipp-ex', 'surligneur', 'stabilo', 'toner', 'bostitch', 'taille crayon', 'post it', 'recharge', 'graphite', 'agrafes', 'porte mine', 'staedtler', 'fineliner', 'pilot']):
+                return 'Bureau'
+            if any(word in nom_lower for word in ['mètre', 'pliant', 'mesure', 'qualité']):
+                return 'Outils'
+            # Nettoyage et entretien
+            if any(word in nom_lower for word in ['nettoyage', 'produit', 'détergent', 'désinfectant', 'sac poubelle', 'balai', 'manche', 'conteneur', 'lavette', 'microfibre', 'balayette', 'spartex', 'eau de javel', 'spray', 'tugalin', 'glasreiniger']):
+                return 'Nettoyage'
+            
+            # Hygiène et soins personnels
+            if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'gel']):
+                return 'Hygiène'
+            
+            # No Touch (articles spéciaux)
+            if any(word in nom_lower for word in ['aimant', 'neodyme', 'puissant']):
+                return 'No Touch'
+            
+            # EPI Général : seulement les vrais équipements de protection non classés ailleurs
+            if any(word in nom_lower for word in ['protection', 'sécurité', 'epi', 'équipement']):
+                return 'EPI Général'
+            
+            # Le reste va dans Divers (non-EPI)
+            return 'Divers'
+        
+        # Appliquer la recatégorisation
+        for idx, row in normalized_df.iterrows():
+            new_category = categorize_article(row['Nom'], row['Description'])
+            normalized_df.loc[idx, 'Description'] = new_category
         
         articles_category = normalized_df[normalized_df['Description'] == category]
         
@@ -2917,10 +3352,11 @@ def show_catalogue():
             nom_complet = article['Nom']
             
             if 'taille' in nom_complet.lower():
-                taille_match = re.search(r'taille\s+([a-zA-Z0-9?]+)', nom_complet, re.IGNORECASE)
+                # Détecter différents formats de taille : "Taille 42", "Taille 36/38", "Taille L", etc.
+                taille_match = re.search(r'taille\s+([a-zA-Z0-9?/]+)', nom_complet, re.IGNORECASE)
                 if taille_match:
                     taille = taille_match.group(1)
-                    nom_base = re.sub(r'\s+taille\s+[a-zA-Z0-9?]+', '', nom_complet, flags=re.IGNORECASE).strip()
+                    nom_base = re.sub(r'\s+taille\s+[a-zA-Z0-9?/]+', '', nom_complet, flags=re.IGNORECASE).strip()
                 else:
                     nom_base = nom_complet
                     taille = "?"
@@ -3158,6 +3594,10 @@ def approve_order(order_id, contremaitre):
         
         # Envoyer email de confirmation au contremaître
         send_approval_notification(contremaitre, order_id, "validée")
+        
+        # Notifier le technicien Denis Busoni
+        send_technician_notification("denis.busoni@arcelormittal.com", order_id, contremaitre, equipe, total_prix)
+        
         return True
         
     except Exception as e:
@@ -3194,6 +3634,37 @@ def reject_order(order_id, contremaitre):
     except Exception as e:
         st.error(f"Erreur rejet: {e}")
         return False
+
+def send_technician_notification(tech_email, order_id, contremaitre, equipe, total_prix):
+    """Notifie le technicien Denis Busoni qu'une commande validée l'attend"""
+    try:
+        subject = f"🔧 Nouvelle commande à traiter #{order_id} - FLUX/PARA"
+        body = f"""
+        Bonjour Denis,
+        
+        Une nouvelle commande validée attend votre traitement :
+        
+        📋 Commande #{order_id}
+        👤 Contremaître: {contremaitre}
+        👷‍♂️ Équipe: {equipe}
+        💰 Montant: {total_prix}€
+        
+        📍 Action requise :
+        1. Connectez-vous à l'application FLUX/PARA Commander
+        2. Allez dans "🛠️ Traitement"
+        3. Cliquez "▶️ Prendre en charge" pour cette commande
+        
+        Merci pour votre réactivité !
+        
+        Cordialement,
+        Système FLUX/PARA Commander
+        """
+        
+        send_email_notification(tech_email, subject, body)
+        st.success(f"📧 Technicien notifié : {tech_email}")
+        
+    except Exception as e:
+        st.warning(f"Email technicien non envoyé: {e}")
 
 def get_pending_orders():
     """Récupère les commandes en attente de validation"""
@@ -3479,6 +3950,31 @@ def create_user(username, password, equipe, fonction, couleur_preferee="DT770", 
 
 def get_category_emoji(category):
     emoji_map = {
+        # Nouvelles catégories par zone de protection - THÈME INDUSTRIEL
+        'Protection Tête': '⛑️',  # Casque de chantier
+        'Protection Auditive': '🔇',  # Anti-bruit
+        'Protection Oculaire': '🥽',  # Lunettes de protection
+        'Protection Respiratoire': '😷',  # Masque
+        'Protection Main': '🧤',  # Gants
+        'Protection Pied': '🥾',  # Chaussures de sécurité
+        'Protection Corps': '🦺',  # Gilet de sécurité
+        'Vêtements Haute Visibilité': '⚠️',  # Haute visibilité
+        
+        # Spécialisations métier - THÈME INDUSTRIEL
+        'Oxycoupage': '🔥',  # Flamme/chaleur
+        'No Touch': '⛔',  # Interdiction/spécial
+        
+        # Autres - THÈME INDUSTRIEL/USINE
+        'Outils': '🔧',  # Clé à molette
+        'Éclairage': '💡',  # Ampoule
+        'Marquage': '🏭',  # Usine/marquage industriel
+        'Bureau': '📋',  # Presse-papiers
+        'Nettoyage': '🧹',  # Balai industriel
+        'Hygiène': '🚿',  # Douche/hygiène industrielle
+        'Divers': '⚙️',  # Engrenage industriel
+        'EPI Général': '🛡️',  # Bouclier de protection
+        
+        # Anciennes catégories (compatibilité)
         'Chaussures': '👟',
         'Veste Blouson': '🧥', 
         'Gants': '🧤',
@@ -3491,12 +3987,8 @@ def get_category_emoji(category):
         'Pantalon': '👖',
         'Sous Veste': '👕',
         'Protection': '🦺',
-        'Oxycoupage': '🔧',
         'Outil': '🛠️',
         'Lampe': '💡',
-        'Marquage': '✏️',
-        'Bureau': '🏢',
-        'Divers': '📦',
         'Imprimante': '🖨️',
         'EPI': '🛡️'
     }
@@ -3618,7 +4110,9 @@ def get_all_users():
                    COALESCE(can_add_articles, false),
                    COALESCE(can_view_stats, false),
                    COALESCE(can_view_all_orders, false),
-                   role
+                   role,
+                   COALESCE(can_move_articles, false),
+                   COALESCE(can_delete_articles, false)
             FROM users
             ORDER BY id
         """)
@@ -3789,6 +4283,38 @@ def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, st
     except Exception as e:
         return False, f"❌ Erreur suppression article : {e}"
 
+def move_article_category(reference: str, new_category: str) -> tuple[bool, str]:
+    """Déplace un article vers une nouvelle catégorie."""
+    try:
+        df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
+        df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+        
+        ref_col = get_ref_col(df)
+        
+        # Vérifier que l'article existe
+        if reference not in df[ref_col].astype(str).values:
+            return False, "Référence introuvable"
+        
+        # Mettre à jour la catégorie
+        mask = df[ref_col].astype(str) == str(reference)
+        old_category = df.loc[mask, 'Description'].iloc[0]
+        df.loc[mask, 'Description'] = new_category
+        
+        # Sauvegarder
+        df.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
+        
+        # Purger le cache
+        try:
+            load_articles.clear()
+        except Exception:
+            pass
+        st.cache_data.clear()
+        
+        return True, f"✅ Article déplacé de '{old_category}' vers '{new_category}'"
+        
+    except Exception as e:
+        return False, f"❌ Erreur déplacement : {e}"
+
 # 🔽 placez-la dans la zone « fonctions commandes », juste après get_user_orders()
 def delete_order(order_id: int, current_user: dict) -> tuple[bool, str]:
     """
@@ -3898,15 +4424,6 @@ def get_ref_col(df: pd.DataFrame) -> str:
     return df.columns[0]
 
 def show_user_admin_page() -> None:
-    # ---------- DEBUG PAGE ----------
-    st.info(f"DEBUG page admin ➜ connexion : {DATABASE_URL}")
-    
-    # TEST DIRECT DE LA FONCTION
-    st.error("🚨 TEST : avant appel get_all_users()")
-    test_users = get_all_users()
-    st.error(f"🚨 TEST : après appel, résultat = {len(test_users)} users")
-    # --------------------------------
-    
     st.markdown("## 👥 Gestion des utilisateurs – Administration")
     st.write("---")
 
@@ -3955,16 +4472,12 @@ def show_user_admin_page() -> None:
 
     # ------ LISTE & ÉDITION ----------------------------------------
     st.markdown("### 📄 Utilisateurs existants")
-    for (
-        uid,
-        uname,
-        equipe,
-        fonction,
-        p_add,
-        p_stats,
-        p_all,
-        role,
-    ) in get_all_users():
+    for user_data in get_all_users():
+        if len(user_data) == 8:
+            uid, uname, equipe, fonction, p_add, p_stats, p_all, role = user_data
+            p_move, p_delete = False, False
+        else:
+            uid, uname, equipe, fonction, p_add, p_stats, p_all, role, p_move, p_delete = user_data
         with st.expander(f"👤 {uname} – {role.upper()} ({equipe})", expanded=False):
             st.write(f"ID : {uid}")
             st.write(f"Fonction : {fonction}")
@@ -3985,11 +4498,21 @@ def show_user_admin_page() -> None:
                     value=bool(p_add),
                     key=f"add_{uid}",
                 )
+                e_move = st.checkbox(
+                    "🔄 Déplacer articles",
+                    value=bool(p_move),
+                    key=f"move_{uid}",
+                )
             with c2:
                 e_stats = st.checkbox(
                     "Voir stats",
                     value=bool(p_stats),
                     key=f"stats_{uid}",
+                )
+                e_delete = st.checkbox(
+                    "🗑️ Supprimer articles",
+                    value=bool(p_delete),
+                    key=f"delete_{uid}",
                 )
             with c3:
                 e_all = st.checkbox(
@@ -4008,7 +4531,9 @@ def show_user_admin_page() -> None:
                     permissions = {
                         'can_add_articles': int(e_add),
                         'can_view_stats': int(e_stats),
-                        'can_view_all_orders': int(e_all)
+                        'can_view_all_orders': int(e_all),
+                        'can_move_articles': int(e_move),
+                        'can_delete_articles': int(e_delete)
                     }
                     ok = update_user_permissions(uid, permissions)
                     if ok:
