@@ -253,53 +253,7 @@ st.markdown("""
     padding: 20px;
 }
 
-/* === INTERFACE VOCALE === */
-.voice-button {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    z-index: 1000;
-    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-    border: none;
-    border-radius: 50%;
-    width: 60px;
-    height: 60px;
-    color: white;
-    font-size: 24px;
-    cursor: pointer;
-    box-shadow: 0 4px 20px rgba(255, 107, 107, 0.4);
-    transition: all 0.3s ease;
-}
-
-.voice-button:hover {
-    transform: scale(1.1);
-    box-shadow: 0 6px 25px rgba(255, 107, 107, 0.6);
-}
-
-.voice-button.listening {
-    background: linear-gradient(45deg, #00d2ff, #3a7bd5);
-    animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-.voice-feedback {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: rgba(0, 0, 0, 0.8);
-    color: white;
-    padding: 20px;
-    border-radius: 15px;
-    z-index: 1001;
-    text-align: center;
-    min-width: 300px;
-}
+/* === INTERFACE VOCALE SUPPRIMÉE === */
 
 .ai-suggestions {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -692,194 +646,8 @@ def get_contextual_recommendations(current_article):
     
     return recommendations[:4]  # Limiter à 4 recommandations
 
-# === INTERFACE VOCALE ===
-def render_voice_interface():
-    """Interface de commandes vocales avec Web Speech API"""
-    
-    # JavaScript pour la reconnaissance vocale
-    voice_js = """
-    <script>
-    let recognition;
-    let isListening = false;
-    
-    // Initialisation de la reconnaissance vocale
-    function initVoiceRecognition() {
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-            recognition.lang = 'fr-FR';
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-            
-            recognition.onstart = function() {
-                isListening = true;
-                document.getElementById('voice-btn').classList.add('listening');
-                showVoiceFeedback('🎤 Écoute en cours...', 'info');
-            };
-            
-            recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript.toLowerCase();
-                processVoiceCommand(transcript);
-            };
-            
-            recognition.onerror = function(event) {
-                showVoiceFeedback('❌ Erreur: ' + event.error, 'error');
-                stopListening();
-            };
-            
-            recognition.onend = function() {
-                stopListening();
-            };
-        } else {
-            showVoiceFeedback('❌ Reconnaissance vocale non supportée', 'error');
-        }
-    }
-    
-    // Traitement des commandes vocales
-    function processVoiceCommand(transcript) {
-        console.log('Commande reçue:', transcript);
-        
-        // Commandes de navigation
-        if (transcript.includes('panier')) {
-            showVoiceFeedback('📋 Ouverture du panier...', 'success');
-            window.parent.postMessage({type: 'navigate', page: 'cart'}, '*');
-        } else if (transcript.includes('catalogue')) {
-            showVoiceFeedback('🛡️ Retour au catalogue...', 'success');
-            window.parent.postMessage({type: 'navigate', page: 'catalogue'}, '*');
-        } else if (transcript.includes('commandes')) {
-            showVoiceFeedback('📊 Mes commandes...', 'success');
-            window.parent.postMessage({type: 'navigate', page: 'mes_commandes'}, '*');
-        } 
-        // Commandes d'ajout d'articles
-        else if (transcript.includes('ajouter') || transcript.includes('ajoute')) {
-            const article = extractArticleFromCommand(transcript);
-            if (article) {
-                showVoiceFeedback(`➕ Recherche: ${article}...`, 'info');
-                window.parent.postMessage({type: 'search_article', query: article}, '*');
-            } else {
-                showVoiceFeedback('❓ Article non reconnu. Essayez: "Ajouter casque"', 'warning');
-            }
-        } 
-        // Aide
-        else if (transcript.includes('aide') || transcript.includes('help')) {
-            showVoiceCommands();
-        } else {
-            showVoiceFeedback('❓ Commande non reconnue. Dites "aide" pour voir les commandes disponibles.', 'warning');
-        }
-    }
-    
-    // Extraction d'article depuis la commande
-    function extractArticleFromCommand(transcript) {
-        const articles_keywords = {
-            'casque': 'casque',
-            'gant': 'gant',
-            'gants': 'gant',
-            'chaussure': 'chaussure',
-            'chaussures': 'chaussure',
-            'lunette': 'lunette',
-            'lunettes': 'lunette',
-            'masque': 'masque',
-            'gilet': 'gilet',
-            'botte': 'botte',
-            'bottes': 'botte',
-            'protection': 'protection',
-            'sécurité': 'sécurité'
-        };
-        
-        for (let keyword in articles_keywords) {
-            if (transcript.includes(keyword)) {
-                return articles_keywords[keyword];
-            }
-        }
-        return null;
-    }
-    
-    // Affichage des commandes disponibles
-    function showVoiceCommands() {
-        const commands = `
-        🎤 <b>Commandes vocales disponibles:</b><br><br>
-        📋 <b>Navigation:</b><br>
-        • "Panier" - Voir le panier<br>
-        • "Catalogue" - Retour au catalogue<br>
-        • "Commandes" - Mes commandes<br><br>
-        ➕ <b>Ajout d'articles:</b><br>
-        • "Ajouter casque"<br>
-        • "Ajouter gant"<br>
-        • "Ajouter chaussures"<br>
-        • "Ajouter lunettes"<br><br>
-        ❓ <b>Aide:</b><br>
-        • "Aide" - Voir cette aide
-        `;
-        showVoiceFeedback(commands, 'info', 8000);
-    }
-    
-    // Affichage du feedback vocal
-    function showVoiceFeedback(message, type = 'info', duration = 3000) {
-        let existingFeedback = document.getElementById('voice-feedback');
-        if (existingFeedback) {
-            existingFeedback.remove();
-        }
-        
-        const feedback = document.createElement('div');
-        feedback.id = 'voice-feedback';
-        feedback.className = 'voice-feedback';
-        feedback.innerHTML = message;
-        
-        if (type === 'error') {
-            feedback.style.background = 'rgba(255, 107, 107, 0.9)';
-        } else if (type === 'success') {
-            feedback.style.background = 'rgba(46, 204, 113, 0.9)';
-        } else if (type === 'warning') {
-            feedback.style.background = 'rgba(255, 193, 7, 0.9)';
-        }
-        
-        document.body.appendChild(feedback);
-        
-        setTimeout(() => {
-            if (feedback && feedback.parentNode) {
-                feedback.parentNode.removeChild(feedback);
-            }
-        }, duration);
-    }
-    
-    // Démarrage/arrêt de l'écoute
-    function toggleVoiceRecognition() {
-        if (!recognition) {
-            initVoiceRecognition();
-        }
-        
-        if (isListening) {
-            recognition.stop();
-        } else {
-            recognition.start();
-        }
-    }
-    
-    function stopListening() {
-        isListening = false;
-        document.getElementById('voice-btn').classList.remove('listening');
-    }
-    
-    // Écoute des messages depuis Streamlit
-    window.addEventListener('message', function(event) {
-        if (event.data.type === 'voice_command_processed') {
-            showVoiceFeedback(event.data.message, event.data.status);
-        }
-    });
-    
-    // Initialisation au chargement
-    document.addEventListener('DOMContentLoaded', function() {
-        initVoiceRecognition();
-    });
-    </script>
-    
-    <!-- Bouton vocal flottant -->
-    <button id="voice-btn" class="voice-button" onclick="toggleVoiceRecognition()" title="Commandes vocales (Clic ou dites 'Aide')">
-        🎤
-    </button>
-    """
-    
-    # Rendu du composant
-    st.components.v1.html(voice_js, height=0)
+# === INTERFACE VOCALE SUPPRIMÉE ===
+# (Fonctionnalité retirée à la demande de l'utilisateur)
 
 def show_ai_suggestions_panel(user_id, current_cart):
     """Panneau de suggestions IA intelligentes"""
@@ -4710,10 +4478,7 @@ def display_list_view(articles_df):
             st.divider()
 
 def show_catalogue():
-    """Affiche le catalogue des articles avec IA et commandes vocales"""
-    
-    # Interface vocale flottante
-    render_voice_interface()
+    """Affiche le catalogue des articles avec IA intelligente"""
     
     # Header moderne avec statistiques en temps réel
     col_title, col_stats, col_ai = st.columns([2, 1, 1])
@@ -4732,7 +4497,6 @@ def show_catalogue():
     with col_ai:
         # Toggle IA
         ai_enabled = st.checkbox("🤖 Assistant IA", value=True, help="Active les suggestions intelligentes")
-        voice_help = st.button("🎤 Aide Vocale", help="Voir les commandes vocales disponibles")
     
     budget_used = calculate_cart_total()
     budget_remaining = MAX_CART_AMOUNT - budget_used
@@ -4750,80 +4514,12 @@ def show_catalogue():
         st.progress(progress_percent, text=f"Utilisé: {progress_percent*100:.1f}%")
     
     with col_search:
-        # Barre de recherche globale moderne avec commandes vocales
-        col_input, col_voice = st.columns([4, 1])
-        
-        with col_input:
-            search_query = st.text_input(
-                "🔍 Recherche globale", 
-                placeholder="Tapez ou dites: 'casque', 'gant', 'chaussures'...",
-                help="Recherche dans tous les articles du catalogue + Commandes vocales",
-                key="search_input"
-            )
-        
-        with col_voice:
-            # Interface vocale simplifiée avec session state
-            if 'voice_search' not in st.session_state:
-                st.session_state.voice_search = ""
-            
-            if st.button("🎤", help="Commande vocale: dites le nom d'un article", key="voice_btn"):
-                st.session_state.voice_listening = True
-                
-                st.markdown("""
-                <div style="background: linear-gradient(45deg, #667eea, #764ba2); color: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
-                    <h4>🎤 Assistant Vocal Activé</h4>
-                    <p>Sélectionnez un article ou tapez dans la recherche :</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Interface vocale intelligente
-                voice_options = {
-                    "🛡️ Casque de protection": "casque",
-                    "🧤 Gants de protection": "gant", 
-                    "👟 Chaussures de sécurité": "chaussures",
-                    "🥽 Lunettes de protection": "lunettes",
-                    "😷 Masque respiratoire": "masque",
-                    "🦺 Gilet haute visibilité": "gilet",
-                    "🔥 Équipement oxycoupage": "oxycoupage",
-                    "🔧 Outils": "outil"
-                }
-                
-                selected_voice = st.selectbox(
-                    "🎯 Commande vocale rapide :", 
-                    [""] + list(voice_options.keys()),
-                    key="voice_select"
-                )
-                
-                col_search_voice, col_add_voice = st.columns(2)
-                
-                with col_search_voice:
-                    if selected_voice and st.button("🔍 Rechercher", key="voice_search_btn"):
-                        st.session_state.voice_search = voice_options[selected_voice]
-                        st.rerun()
-                
-                with col_add_voice:
-                    if selected_voice and st.button("➕ Ajouter au panier", key="voice_add_btn", type="primary"):
-                        # Recherche intelligente et ajout automatique du premier résultat
-                        search_term = voice_options[selected_voice]
-                        articles_df = load_articles()
-                        matching_articles = articles_df[
-                            articles_df['Nom'].str.contains(search_term, case=False, na=False)
-                        ]
-                        
-                        if not matching_articles.empty:
-                            # Prendre le premier article trouvé
-                            first_article = matching_articles.iloc[0].to_dict()
-                            add_to_cart(first_article)
-                            st.success(f"✅ {first_article.get('Nom', '')[:30]} ajouté au panier!")
-                            st.session_state.voice_listening = False
-                            st.rerun()
-                        else:
-                            st.warning(f"❌ Aucun article trouvé pour '{search_term}'")
-        
-        # Si une recherche vocale est active, l'utiliser
-        if st.session_state.get('voice_search'):
-            search_query = st.session_state.voice_search
-            st.session_state.voice_search = ""  # Reset après utilisation
+        # Barre de recherche globale moderne
+        search_query = st.text_input(
+            "🔍 Recherche globale", 
+            placeholder="Tapez un nom, référence, marque...",
+            help="Recherche dans tous les articles du catalogue"
+        )
     
     # Catégories avec cache intelligent pour les compteurs
     try:
@@ -4852,27 +4548,6 @@ def show_catalogue():
     if current_cart:
         show_duplicate_detection_panel(current_cart)
     
-    # Aide vocale
-    if voice_help:
-        st.info("""
-        🎤 **Commandes vocales disponibles :**
-        
-        **📋 Navigation :**
-        • "Panier" - Voir le panier
-        • "Catalogue" - Retour au catalogue  
-        • "Commandes" - Mes commandes
-        
-        **➕ Ajout d'articles :**
-        • "Ajouter casque"
-        • "Ajouter gant" 
-        • "Ajouter chaussures"
-        • "Ajouter lunettes"
-        
-        **❓ Aide :**
-        • "Aide" - Voir cette aide
-        
-        *Cliquez sur le bouton 🎤 en bas à droite pour commencer !*
-        """)
     
     # Recherche globale prioritaire
     if search_query and search_query.strip():
@@ -4957,6 +4632,10 @@ def show_catalogue():
             st.session_state.selected_category = None
             st.rerun()
         st.markdown(f"#### {emoji} {category}")
+        
+        # Charger les articles
+        articles_df = load_articles()
+        
         # Système de regroupement automatique par mots-clés
         normalized_df = articles_df.copy()
         
