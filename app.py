@@ -2497,6 +2497,47 @@ def show_cart():
                 st.rerun()
         else:
             st.button("❌ Budget dépassé", disabled=True, use_container_width=True)
+    
+    # === SUGGESTIONS IA DANS LE PANIER ===
+    user_id = st.session_state.get('current_user', {}).get('id')
+    if user_id and st.session_state.cart:
+        st.markdown("---")
+        
+        # Suggestions basées sur le panier actuel
+        show_ai_suggestions_panel(user_id, st.session_state.cart)
+        
+        # Détection de doublons dans le panier
+        show_duplicate_detection_panel(st.session_state.cart)
+        
+        # Recommandations contextuelles basées sur le dernier article ajouté
+        if st.session_state.cart:
+            last_article = st.session_state.cart[-1]
+            recommendations = get_contextual_recommendations(last_article)
+            
+            if recommendations:
+                st.markdown("### 💡 Compléments recommandés")
+                st.markdown(f"*Basé sur votre dernier ajout: {last_article.get('Nom', '')[:30]}...*")
+                
+                rec_cols = st.columns(min(4, len(recommendations)))
+                
+                for i, rec in enumerate(recommendations[:4]):
+                    with rec_cols[i]:
+                        article = rec['article']
+                        reason = rec['reason']
+                        
+                        st.markdown(f"""
+                        <div style="border: 1px solid #667eea; border-radius: 10px; padding: 10px; margin: 5px 0; background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));">
+                            <strong>{article.get('Nom', '')[:25]}...</strong><br>
+                            <small>💡 {reason}</small><br>
+                            <small>💰 {article.get('Prix', 0)}€</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        if st.button("➕", key=f"cart_rec_add_{i}_{article.get('N° Référence', '')}", 
+                                   help=f"Ajouter {article.get('Nom', '')} au panier"):
+                            add_to_cart(article)
+                            st.success(f"✅ {article.get('Nom', '')[:20]} ajouté!")
+                            st.rerun()
 
 def generate_commande_pdf(commande_data):
     """Génère le PDF de commande pour l'utilisateur"""
@@ -4709,12 +4750,80 @@ def show_catalogue():
         st.progress(progress_percent, text=f"Utilisé: {progress_percent*100:.1f}%")
     
     with col_search:
-        # Barre de recherche globale moderne
-        search_query = st.text_input(
-            "🔍 Recherche globale", 
-            placeholder="Tapez un nom, référence, marque...",
-            help="Recherche dans tous les articles du catalogue"
-        )
+        # Barre de recherche globale moderne avec commandes vocales
+        col_input, col_voice = st.columns([4, 1])
+        
+        with col_input:
+            search_query = st.text_input(
+                "🔍 Recherche globale", 
+                placeholder="Tapez ou dites: 'casque', 'gant', 'chaussures'...",
+                help="Recherche dans tous les articles du catalogue + Commandes vocales",
+                key="search_input"
+            )
+        
+        with col_voice:
+            # Interface vocale simplifiée avec session state
+            if 'voice_search' not in st.session_state:
+                st.session_state.voice_search = ""
+            
+            if st.button("🎤", help="Commande vocale: dites le nom d'un article", key="voice_btn"):
+                st.session_state.voice_listening = True
+                
+                st.markdown("""
+                <div style="background: linear-gradient(45deg, #667eea, #764ba2); color: white; padding: 15px; border-radius: 10px; margin: 10px 0;">
+                    <h4>🎤 Assistant Vocal Activé</h4>
+                    <p>Sélectionnez un article ou tapez dans la recherche :</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Interface vocale intelligente
+                voice_options = {
+                    "🛡️ Casque de protection": "casque",
+                    "🧤 Gants de protection": "gant", 
+                    "👟 Chaussures de sécurité": "chaussures",
+                    "🥽 Lunettes de protection": "lunettes",
+                    "😷 Masque respiratoire": "masque",
+                    "🦺 Gilet haute visibilité": "gilet",
+                    "🔥 Équipement oxycoupage": "oxycoupage",
+                    "🔧 Outils": "outil"
+                }
+                
+                selected_voice = st.selectbox(
+                    "🎯 Commande vocale rapide :", 
+                    [""] + list(voice_options.keys()),
+                    key="voice_select"
+                )
+                
+                col_search_voice, col_add_voice = st.columns(2)
+                
+                with col_search_voice:
+                    if selected_voice and st.button("🔍 Rechercher", key="voice_search_btn"):
+                        st.session_state.voice_search = voice_options[selected_voice]
+                        st.rerun()
+                
+                with col_add_voice:
+                    if selected_voice and st.button("➕ Ajouter au panier", key="voice_add_btn", type="primary"):
+                        # Recherche intelligente et ajout automatique du premier résultat
+                        search_term = voice_options[selected_voice]
+                        articles_df = load_articles()
+                        matching_articles = articles_df[
+                            articles_df['Nom'].str.contains(search_term, case=False, na=False)
+                        ]
+                        
+                        if not matching_articles.empty:
+                            # Prendre le premier article trouvé
+                            first_article = matching_articles.iloc[0].to_dict()
+                            add_to_cart(first_article)
+                            st.success(f"✅ {first_article.get('Nom', '')[:30]} ajouté au panier!")
+                            st.session_state.voice_listening = False
+                            st.rerun()
+                        else:
+                            st.warning(f"❌ Aucun article trouvé pour '{search_term}'")
+        
+        # Si une recherche vocale est active, l'utiliser
+        if st.session_state.get('voice_search'):
+            search_query = st.session_state.voice_search
+            st.session_state.voice_search = ""  # Reset après utilisation
     
     # Catégories avec cache intelligent pour les compteurs
     try:
