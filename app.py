@@ -863,18 +863,12 @@ def init_session_state():
     if 'current_user' not in st.session_state:
         st.session_state.current_user = None
 
-    # Restauration locale (fichier) pour éviter la déconnexion au refresh en local
+    # SÉCURITÉ : Pas de restauration automatique des sessions
+    # La restauration de session doit être explicite et sécurisée
+    # Supprimer tout fichier de session au démarrage pour éviter les fuites de sécurité
     try:
-        if not st.session_state.get('authenticated') and os.path.exists('temp_session.json'):
-            with open('temp_session.json', 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict) and data.get('user'):
-                st.session_state.authenticated = True
-                st.session_state.current_user = data['user']
-                if isinstance(data.get('cart'), list):
-                    st.session_state.cart = data['cart']
-                ensure_cart_normalized()
-                st.session_state.page = data.get('page', 'catalogue')
+        if os.path.exists('temp_session.json'):
+            os.remove('temp_session.json')
     except Exception:
         pass
 
@@ -2299,12 +2293,32 @@ def render_navigation():
         with cols[i]:
             if page == "logout":
                 if st.button(label, use_container_width=True):
+                    # SÉCURITÉ : Nettoyage complet des sessions
+                    user_id = st.session_state.get('current_user', {}).get('id')
+                    
                     # Nettoyage session locale
                     try:
                         if os.path.exists('temp_session.json'):
                             os.remove('temp_session.json')
                     except Exception:
                         pass
+                    
+                    # Nettoyage sessions en base de données (prod)
+                    if user_id and USE_POSTGRESQL:
+                        try:
+                            conn = psycopg2.connect(DATABASE_URL)
+                            cursor = conn.cursor()
+                            # Supprimer les tokens de session de cet utilisateur
+                            cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+                            # Supprimer le panier sauvegardé
+                            cursor.execute("DELETE FROM user_cart_sessions WHERE user_id = %s", (user_id,))
+                            conn.commit()
+                            conn.close()
+                        except Exception:
+                            pass
+                    
+                    # Nettoyage Streamlit session_state
+                    st.session_state.clear()
                     st.session_state.authenticated = False
                     st.session_state.current_user = {}
                     st.session_state.cart = []
