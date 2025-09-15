@@ -3271,7 +3271,7 @@ def count_articles_in_category(category):
         # Protection Main
         if any(word in nom_lower for word in ['gant', 'main', 'protection main', 'anti coupure', 'lebon', 'wintersafe', 'metalfit']):
             return 'Protection Main'
-        # Protection Pied
+        # Protection Pied (PRIORITÉ : avant hygiène pour éviter confusion avec "gel")
         if any(word in nom_lower for word in ['chaussure', 'botte', 'sabot', 'pied', 'semelle', 'uvex', 'hydroflex', 'atlas', 'klima']):
             return 'Protection Pied'
         # Vêtements de protection
@@ -3294,8 +3294,8 @@ def count_articles_in_category(category):
         # Nettoyage
         if any(word in nom_lower for word in ['nettoyage', 'produit', 'détergent', 'désinfectant', 'sac poubelle', 'balai', 'manche', 'conteneur', 'lavette', 'microfibre', 'balayette', 'spartex', 'eau de javel', 'spray', 'tugalin', 'glasreiniger']):
             return 'Nettoyage'
-        # Hygiène
-        if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'gel']):
+        # Hygiène (éviter les semelles gel)
+        if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'papier toilette', 'pommade', 'lingette', 'protection peau']) or ('gel' in nom_lower and 'semelle' not in nom_lower):
             return 'Hygiène'
         # No Touch
         if any(word in nom_lower for word in ['aimant', 'neodyme', 'puissant']):
@@ -3614,8 +3614,8 @@ def show_catalogue():
             if any(word in nom_lower for word in ['nettoyage', 'produit', 'détergent', 'désinfectant', 'sac poubelle', 'balai', 'manche', 'conteneur', 'lavette', 'microfibre', 'balayette', 'spartex', 'eau de javel', 'spray', 'tugalin', 'glasreiniger']):
                 return 'Nettoyage'
             
-            # Hygiène et soins personnels
-            if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'gel']):
+            # Hygiène et soins personnels (éviter les semelles gel)
+            if any(word in nom_lower for word in ['lotion', 'protectrice', 'lindesa', 'shampoings', 'hygiène', 'savon', 'papier toilette', 'pommade', 'lingette', 'protection peau']) or ('gel' in nom_lower and 'semelle' not in nom_lower):
                 return 'Hygiène'
             
             # No Touch (articles spéciaux)
