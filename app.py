@@ -153,9 +153,16 @@ USE_POSTGRESQL = os.environ.get("USE_POSTGRESQL", "true").lower() in ("1", "true
 def load_articles():
     """Charge les articles depuis le CSV - 5 colonnes strictes"""
     try:
+        # DEBUG: Afficher le chemin et l'existence du fichier
+        st.write(f"🔍 DEBUG: Chemin CSV = {ARTICLES_CSV_PATH}")
+        st.write(f"🔍 DEBUG: Fichier existe = {os.path.exists(ARTICLES_CSV_PATH)}")
+        
         # Lecture robuste sans heuristics coûteuses: on lit les 5 premières colonnes au séparateur virgule
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+        
+        st.write(f"🔍 DEBUG: Articles bruts chargés = {len(df)}")
+        
         # Nettoyage classique
         df = df.dropna(subset=['Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
@@ -164,9 +171,12 @@ def load_articles():
         # Accepter aussi les noms courts (ex: "10")
         df['Nom'] = df['Nom'].astype(str).str.strip()
         df = df[df['Nom'].str.len() >= 1]
+        
+        st.write(f"🔍 DEBUG: Articles après nettoyage = {len(df)}")
+        
         return df
     except FileNotFoundError:
-        st.warning("📁 Fichier articles.csv non trouvé, création d'articles d'exemple")
+        st.error(f"📁 ERREUR: Fichier articles.csv non trouvé à {ARTICLES_CSV_PATH}")
         return create_sample_articles()
     except UnicodeDecodeError:
         try:
@@ -174,10 +184,11 @@ def load_articles():
             df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
             return df
         except Exception as e:
-            st.error(f"❌ Erreur lecture : {e}")
+            st.error(f"❌ Erreur lecture latin-1 : {e}")
             return create_sample_articles()
     except Exception as e:
-        st.error(f"❌ Erreur inattendue : {e}")
+        st.error(f"❌ Erreur inattendue lors du chargement : {e}")
+        st.error(f"📍 Chemin testé : {ARTICLES_CSV_PATH}")
         return create_sample_articles()
 
 def read_csv_safe(filename):
