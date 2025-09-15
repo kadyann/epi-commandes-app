@@ -252,6 +252,91 @@ st.markdown("""
     border-radius: 15px;
     padding: 20px;
 }
+
+/* === INTERFACE VOCALE === */
+.voice-button {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+    border: none;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(255, 107, 107, 0.4);
+    transition: all 0.3s ease;
+}
+
+.voice-button:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 25px rgba(255, 107, 107, 0.6);
+}
+
+.voice-button.listening {
+    background: linear-gradient(45deg, #00d2ff, #3a7bd5);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+.voice-feedback {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 20px;
+    border-radius: 15px;
+    z-index: 1001;
+    text-align: center;
+    min-width: 300px;
+}
+
+.ai-suggestions {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 15px;
+    padding: 15px;
+    margin: 10px 0;
+    color: white;
+}
+
+.suggestion-item {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 10px;
+    margin: 5px 0;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.suggestion-item:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateX(5px);
+}
+
+.duplicate-alert {
+    background: linear-gradient(45deg, #ff9a56, #ff6b6b);
+    color: white;
+    padding: 10px;
+    border-radius: 10px;
+    margin: 5px 0;
+    animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -606,6 +691,258 @@ def get_contextual_recommendations(current_article):
                 })
     
     return recommendations[:4]  # Limiter à 4 recommandations
+
+# === INTERFACE VOCALE ===
+def render_voice_interface():
+    """Interface de commandes vocales avec Web Speech API"""
+    
+    # JavaScript pour la reconnaissance vocale
+    voice_js = """
+    <script>
+    let recognition;
+    let isListening = false;
+    
+    // Initialisation de la reconnaissance vocale
+    function initVoiceRecognition() {
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'fr-FR';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            
+            recognition.onstart = function() {
+                isListening = true;
+                document.getElementById('voice-btn').classList.add('listening');
+                showVoiceFeedback('🎤 Écoute en cours...', 'info');
+            };
+            
+            recognition.onresult = function(event) {
+                const transcript = event.results[0][0].transcript.toLowerCase();
+                processVoiceCommand(transcript);
+            };
+            
+            recognition.onerror = function(event) {
+                showVoiceFeedback('❌ Erreur: ' + event.error, 'error');
+                stopListening();
+            };
+            
+            recognition.onend = function() {
+                stopListening();
+            };
+        } else {
+            showVoiceFeedback('❌ Reconnaissance vocale non supportée', 'error');
+        }
+    }
+    
+    // Traitement des commandes vocales
+    function processVoiceCommand(transcript) {
+        console.log('Commande reçue:', transcript);
+        
+        // Commandes de navigation
+        if (transcript.includes('panier')) {
+            showVoiceFeedback('📋 Ouverture du panier...', 'success');
+            window.parent.postMessage({type: 'navigate', page: 'cart'}, '*');
+        } else if (transcript.includes('catalogue')) {
+            showVoiceFeedback('🛡️ Retour au catalogue...', 'success');
+            window.parent.postMessage({type: 'navigate', page: 'catalogue'}, '*');
+        } else if (transcript.includes('commandes')) {
+            showVoiceFeedback('📊 Mes commandes...', 'success');
+            window.parent.postMessage({type: 'navigate', page: 'mes_commandes'}, '*');
+        } 
+        // Commandes d'ajout d'articles
+        else if (transcript.includes('ajouter') || transcript.includes('ajoute')) {
+            const article = extractArticleFromCommand(transcript);
+            if (article) {
+                showVoiceFeedback(`➕ Recherche: ${article}...`, 'info');
+                window.parent.postMessage({type: 'search_article', query: article}, '*');
+            } else {
+                showVoiceFeedback('❓ Article non reconnu. Essayez: "Ajouter casque"', 'warning');
+            }
+        } 
+        // Aide
+        else if (transcript.includes('aide') || transcript.includes('help')) {
+            showVoiceCommands();
+        } else {
+            showVoiceFeedback('❓ Commande non reconnue. Dites "aide" pour voir les commandes disponibles.', 'warning');
+        }
+    }
+    
+    // Extraction d'article depuis la commande
+    function extractArticleFromCommand(transcript) {
+        const articles_keywords = {
+            'casque': 'casque',
+            'gant': 'gant',
+            'gants': 'gant',
+            'chaussure': 'chaussure',
+            'chaussures': 'chaussure',
+            'lunette': 'lunette',
+            'lunettes': 'lunette',
+            'masque': 'masque',
+            'gilet': 'gilet',
+            'botte': 'botte',
+            'bottes': 'botte',
+            'protection': 'protection',
+            'sécurité': 'sécurité'
+        };
+        
+        for (let keyword in articles_keywords) {
+            if (transcript.includes(keyword)) {
+                return articles_keywords[keyword];
+            }
+        }
+        return null;
+    }
+    
+    // Affichage des commandes disponibles
+    function showVoiceCommands() {
+        const commands = `
+        🎤 <b>Commandes vocales disponibles:</b><br><br>
+        📋 <b>Navigation:</b><br>
+        • "Panier" - Voir le panier<br>
+        • "Catalogue" - Retour au catalogue<br>
+        • "Commandes" - Mes commandes<br><br>
+        ➕ <b>Ajout d'articles:</b><br>
+        • "Ajouter casque"<br>
+        • "Ajouter gant"<br>
+        • "Ajouter chaussures"<br>
+        • "Ajouter lunettes"<br><br>
+        ❓ <b>Aide:</b><br>
+        • "Aide" - Voir cette aide
+        `;
+        showVoiceFeedback(commands, 'info', 8000);
+    }
+    
+    // Affichage du feedback vocal
+    function showVoiceFeedback(message, type = 'info', duration = 3000) {
+        let existingFeedback = document.getElementById('voice-feedback');
+        if (existingFeedback) {
+            existingFeedback.remove();
+        }
+        
+        const feedback = document.createElement('div');
+        feedback.id = 'voice-feedback';
+        feedback.className = 'voice-feedback';
+        feedback.innerHTML = message;
+        
+        if (type === 'error') {
+            feedback.style.background = 'rgba(255, 107, 107, 0.9)';
+        } else if (type === 'success') {
+            feedback.style.background = 'rgba(46, 204, 113, 0.9)';
+        } else if (type === 'warning') {
+            feedback.style.background = 'rgba(255, 193, 7, 0.9)';
+        }
+        
+        document.body.appendChild(feedback);
+        
+        setTimeout(() => {
+            if (feedback && feedback.parentNode) {
+                feedback.parentNode.removeChild(feedback);
+            }
+        }, duration);
+    }
+    
+    // Démarrage/arrêt de l'écoute
+    function toggleVoiceRecognition() {
+        if (!recognition) {
+            initVoiceRecognition();
+        }
+        
+        if (isListening) {
+            recognition.stop();
+        } else {
+            recognition.start();
+        }
+    }
+    
+    function stopListening() {
+        isListening = false;
+        document.getElementById('voice-btn').classList.remove('listening');
+    }
+    
+    // Écoute des messages depuis Streamlit
+    window.addEventListener('message', function(event) {
+        if (event.data.type === 'voice_command_processed') {
+            showVoiceFeedback(event.data.message, event.data.status);
+        }
+    });
+    
+    // Initialisation au chargement
+    document.addEventListener('DOMContentLoaded', function() {
+        initVoiceRecognition();
+    });
+    </script>
+    
+    <!-- Bouton vocal flottant -->
+    <button id="voice-btn" class="voice-button" onclick="toggleVoiceRecognition()" title="Commandes vocales (Clic ou dites 'Aide')">
+        🎤
+    </button>
+    """
+    
+    # Rendu du composant
+    st.components.v1.html(voice_js, height=0)
+
+def show_ai_suggestions_panel(user_id, current_cart):
+    """Panneau de suggestions IA intelligentes"""
+    suggestions = get_ai_suggestions_for_user(user_id, current_cart)
+    
+    if suggestions:
+        st.markdown('<div class="ai-suggestions">', unsafe_allow_html=True)
+        st.markdown("### 🤖 Suggestions IA pour vous")
+        
+        for suggestion in suggestions:
+            article = suggestion['article']
+            reason = suggestion['reason']
+            score = suggestion['score']
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div class="suggestion-item">
+                    <strong>{article.get('Nom', '')[:40]}</strong><br>
+                    <small>💡 {reason} | 🎯 Score: {score}</small><br>
+                    <small>💰 {article.get('Prix', 0)}€</small>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                if st.button("➕", key=f"ai_add_{article.get('N° Référence', '')}", 
+                           help=f"Ajouter {article.get('Nom', '')} au panier"):
+                    add_to_cart(article)
+                    st.success(f"✅ {article.get('Nom', '')[:30]} ajouté!")
+                    st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+def show_duplicate_detection_panel(current_cart):
+    """Panneau de détection de doublons"""
+    duplicates = detect_cart_duplicates(current_cart)
+    
+    if duplicates:
+        st.markdown("### 🚨 Détection de Doublons")
+        
+        for duplicate in duplicates:
+            if duplicate['type'] == 'exact':
+                st.markdown(f"""
+                <div class="duplicate-alert">
+                    🔴 <strong>Doublon exact détecté!</strong><br>
+                    {duplicate['message']}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if st.button(f"🗑️ Supprimer le doublon", key=f"remove_dup_{duplicate['items'][1]}"):
+                    if duplicate['items'][1] < len(current_cart):
+                        current_cart.pop(duplicate['items'][1])
+                        st.success("✅ Doublon supprimé!")
+                        st.rerun()
+            
+            elif duplicate['type'] == 'similar':
+                st.markdown(f"""
+                <div class="duplicate-alert" style="background: linear-gradient(45deg, #f39c12, #e67e22);">
+                    🟡 <strong>Articles similaires détectés</strong><br>
+                    {duplicate['message']}
+                </div>
+                """, unsafe_allow_html=True)
 
 # === ANALYTICS AVANCÉS ===
 @st.cache_data(ttl=1800, show_spinner="📊 Génération des analytics avancés...")
@@ -4332,10 +4669,13 @@ def display_list_view(articles_df):
             st.divider()
 
 def show_catalogue():
-    """Affiche le catalogue des articles avec interface moderne et cache intelligent"""
+    """Affiche le catalogue des articles avec IA et commandes vocales"""
+    
+    # Interface vocale flottante
+    render_voice_interface()
     
     # Header moderne avec statistiques en temps réel
-    col_title, col_stats = st.columns([2, 1])
+    col_title, col_stats, col_ai = st.columns([2, 1, 1])
     
     with col_title:
         st.markdown("### 🛡️ Catalogue FLUX/PARA")
@@ -4347,6 +4687,11 @@ def show_catalogue():
             st.metric("📊 Total commandes", stats['total_orders'], delta=None)
         except:
             pass
+    
+    with col_ai:
+        # Toggle IA
+        ai_enabled = st.checkbox("🤖 Assistant IA", value=True, help="Active les suggestions intelligentes")
+        voice_help = st.button("🎤 Aide Vocale", help="Voir les commandes vocales disponibles")
     
     budget_used = calculate_cart_total()
     budget_remaining = MAX_CART_AMOUNT - budget_used
@@ -4386,6 +4731,40 @@ def show_catalogue():
         ]
         category_counts = {cat: count_articles_in_category(cat) for cat in categories}
     
+    # IA et détection de doublons
+    user_id = st.session_state.get('current_user', {}).get('id')
+    current_cart = st.session_state.get('cart', [])
+    
+    # Panneau de suggestions IA
+    if ai_enabled and user_id:
+        show_ai_suggestions_panel(user_id, current_cart)
+    
+    # Détection de doublons
+    if current_cart:
+        show_duplicate_detection_panel(current_cart)
+    
+    # Aide vocale
+    if voice_help:
+        st.info("""
+        🎤 **Commandes vocales disponibles :**
+        
+        **📋 Navigation :**
+        • "Panier" - Voir le panier
+        • "Catalogue" - Retour au catalogue  
+        • "Commandes" - Mes commandes
+        
+        **➕ Ajout d'articles :**
+        • "Ajouter casque"
+        • "Ajouter gant" 
+        • "Ajouter chaussures"
+        • "Ajouter lunettes"
+        
+        **❓ Aide :**
+        • "Aide" - Voir cette aide
+        
+        *Cliquez sur le bouton 🎤 en bas à droite pour commencer !*
+        """)
+    
     # Recherche globale prioritaire
     if search_query and search_query.strip():
         st.markdown(f"### 🔍 Résultats pour '{search_query}'")
@@ -4394,6 +4773,33 @@ def show_catalogue():
             st.info("Aucun article trouvé pour cette recherche.")
         else:
             display_articles_grid(search_results)
+            
+            # Recommandations contextuelles basées sur la recherche
+            if ai_enabled and not search_results.empty:
+                first_result = search_results.iloc[0].to_dict()
+                recommendations = get_contextual_recommendations(first_result)
+                
+                if recommendations:
+                    st.markdown("### 💡 Recommandations IA liées")
+                    rec_cols = st.columns(min(4, len(recommendations)))
+                    
+                    for i, rec in enumerate(recommendations[:4]):
+                        with rec_cols[i]:
+                            article = rec['article']
+                            reason = rec['reason']
+                            
+                            st.markdown(f"""
+                            <div style="border: 1px solid #667eea; border-radius: 10px; padding: 10px; margin: 5px 0; background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));">
+                                <strong>{article.get('Nom', '')[:25]}...</strong><br>
+                                <small>💡 {reason}</small><br>
+                                <small>💰 {article.get('Prix', 0)}€</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            if st.button("➕ Ajouter", key=f"rec_add_{i}_{article.get('N° Référence', '')}"):
+                                add_to_cart(article)
+                                st.success(f"✅ {article.get('Nom', '')[:20]} ajouté!")
+                                st.rerun()
     elif not st.session_state.get('selected_category'):
         st.markdown("### 📋 Sélectionnez une catégorie")
         
