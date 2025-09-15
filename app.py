@@ -153,15 +153,9 @@ USE_POSTGRESQL = os.environ.get("USE_POSTGRESQL", "true").lower() in ("1", "true
 def load_articles():
     """Charge les articles depuis le CSV - 5 colonnes strictes"""
     try:
-        # DEBUG: Afficher le chemin et l'existence du fichier
-        st.write(f"🔍 DEBUG: Chemin CSV = {ARTICLES_CSV_PATH}")
-        st.write(f"🔍 DEBUG: Fichier existe = {os.path.exists(ARTICLES_CSV_PATH)}")
-        
         # Lecture robuste sans heuristics coûteuses: on lit les 5 premières colonnes au séparateur virgule
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
-        
-        st.write(f"🔍 DEBUG: Articles bruts chargés = {len(df)}")
         
         # Nettoyage classique
         df = df.dropna(subset=['Prix'])
@@ -171,8 +165,6 @@ def load_articles():
         # Accepter aussi les noms courts (ex: "10")
         df['Nom'] = df['Nom'].astype(str).str.strip()
         df = df[df['Nom'].str.len() >= 1]
-        
-        st.write(f"🔍 DEBUG: Articles après nettoyage = {len(df)}")
         
         return df
     except FileNotFoundError:
@@ -3063,7 +3055,7 @@ def count_articles_in_category(category):
             return 'EPI Général'
         return 'Divers'
     
-    # Appliquer la recatégorisation
+    # Appliquer la recatégorisation INTELLIGENTE (respecte les déplacements manuels)
     for idx, row in normalized_df.iterrows():
         new_category = categorize_article(row['Nom'], row['Description'])
         normalized_df.loc[idx, 'Description'] = new_category
@@ -3387,8 +3379,11 @@ def show_catalogue():
             # Le reste va dans Divers (non-EPI)
             return 'Divers'
         
-        # Filtrer les articles par catégorie (SANS re-catégorisation forcée)
-        # Les articles gardent leur catégorie actuelle (respectant les déplacements manuels)
+        # Appliquer la recatégorisation INTELLIGENTE (respecte les déplacements manuels)
+        for idx, row in normalized_df.iterrows():
+            new_category = categorize_article(row['Nom'], row['Description'])
+            normalized_df.loc[idx, 'Description'] = new_category
+        
         articles_category = normalized_df[normalized_df['Description'] == category]
         
         # Regrouper les articles par nom de base
