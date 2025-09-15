@@ -128,10 +128,129 @@ st.caption("Build: local-" + datetime.now().strftime('%H:%M:%S'))
 
 st.markdown("""
 <style>
+/* === RESPONSIVE MOBILE DESIGN === */
 @media (max-width: 768px) {
+    /* Masquer la sidebar par défaut sur mobile */
     section[data-testid="stSidebar"] {
         display: none !important;
     }
+    
+    /* Boutons plus gros pour les doigts */
+    .stButton > button {
+        height: 50px !important;
+        font-size: 16px !important;
+        padding: 12px 20px !important;
+        margin: 5px 0 !important;
+    }
+    
+    /* Navigation en colonnes sur mobile */
+    .mobile-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0;
+    }
+    
+    /* Formulaires adaptés mobile */
+    .stTextInput > div > div > input {
+        height: 45px !important;
+        font-size: 16px !important;
+    }
+    
+    .stSelectbox > div > div > div {
+        height: 45px !important;
+        font-size: 16px !important;
+    }
+    
+    /* Cartes articles plus grandes sur mobile */
+    .article-card-mobile {
+        padding: 15px;
+        margin: 10px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    /* Texte plus lisible sur mobile */
+    .main .block-container {
+        padding: 1rem !important;
+    }
+    
+    /* Métriques empilées sur mobile */
+    .metric-mobile {
+        text-align: center;
+        padding: 10px;
+        margin: 5px 0;
+        background: #f0f2f6;
+        border-radius: 5px;
+    }
+}
+
+/* === NAVIGATION HAMBURGER === */
+.hamburger-menu {
+    display: none;
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    background: #ff6b6b;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    cursor: pointer;
+    font-size: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+}
+
+@media (max-width: 768px) {
+    .hamburger-menu {
+        display: block;
+    }
+}
+
+/* === ANIMATIONS === */
+.fade-in {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.slide-in {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+}
+
+/* === THEME MODERNE === */
+.modern-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 20px;
+    border-radius: 15px;
+    margin: 10px 0;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease;
+}
+
+.modern-card:hover {
+    transform: translateY(-5px);
+}
+
+.glass-effect {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 15px;
+    padding: 20px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -149,9 +268,9 @@ DATABASE_PATH = "commandes.db"
 USE_POSTGRESQL = os.environ.get("USE_POSTGRESQL", "true").lower() in ("1", "true", "yes")
 
 # === CHARGEMENT DES DONNÉES ===
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300, show_spinner="🔄 Chargement des articles...")
 def load_articles():
-    """Charge les articles depuis le CSV - 5 colonnes strictes"""
+    """Charge les articles depuis le CSV avec cache intelligent - 5 colonnes strictes"""
     try:
         # Lecture robuste sans heuristics coûteuses: on lit les 5 premières colonnes au séparateur virgule
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
@@ -260,6 +379,48 @@ def create_sample_articles():
     return pd.DataFrame(sample_data)
 
 articles_df = load_articles()
+
+# === CACHE INTELLIGENT ===
+@st.cache_data(ttl=600, show_spinner="📊 Calcul des statistiques...")
+def get_cached_statistics():
+    """Cache les statistiques pour éviter les recalculs"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) as total_orders, 
+                       SUM(total_prix) as total_amount,
+                       AVG(total_prix) as avg_amount
+                FROM commandes
+            """)
+            stats = cursor.fetchone()
+            conn.close()
+            return {
+                'total_orders': stats[0] or 0,
+                'total_amount': stats[1] or 0,
+                'avg_amount': stats[2] or 0
+            }
+    except Exception:
+        pass
+    return {'total_orders': 0, 'total_amount': 0, 'avg_amount': 0}
+
+@st.cache_data(ttl=180, show_spinner="🔄 Mise à jour du catalogue...")
+def get_cached_categories():
+    """Cache les catégories et compteurs d'articles"""
+    articles_df = load_articles()
+    if articles_df.empty:
+        return {}
+    
+    categories = {}
+    for category in ["Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+                    "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+                    "Oxycoupage", "EPI Général", "No Touch", "Outils", "Éclairage", "Marquage", 
+                    "Bureau", "Nettoyage", "Hygiène", "Divers"]:
+        count = count_articles_in_category(category)
+        if count > 0:
+            categories[category] = count
+    return categories
 
 # === FONCTIONS BASE DE DONNÉES ===
 def init_database():
@@ -2524,7 +2685,90 @@ def get_all_users_list():
         st.error(f"Erreur récupération utilisateurs: {e}")
         return []
 
+def render_mobile_navigation():
+    """Navigation optimisée pour mobile avec menu hamburger"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Menu hamburger avec expander
+    with st.expander("🍔 Menu Navigation", expanded=False):
+        st.markdown('<div class="mobile-nav fade-in">', unsafe_allow_html=True)
+        
+        # Navigation principale en 2 colonnes sur mobile
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🛡️ Catalogue", key="mobile_catalogue", use_container_width=True):
+                st.session_state.page = "catalogue"
+                st.rerun()
+            if st.button("📊 Mes commandes", key="mobile_mes_commandes", use_container_width=True):
+                st.session_state.page = "mes_commandes"
+                st.rerun()
+            if user_info.get("can_view_stats"):
+                if st.button("📈 Statistiques", key="mobile_stats", use_container_width=True):
+                    st.session_state.page = "stats"
+                    st.rerun()
+            if user_info.get("role") == "admin":
+                if st.button("👥 Utilisateurs", key="mobile_admin_users", use_container_width=True):
+                    st.session_state.page = "admin_users"
+                    st.rerun()
+        
+        with col2:
+            if st.button("🛒 Panier", key="mobile_cart", use_container_width=True):
+                st.session_state.page = "cart"
+                st.rerun()
+            if user_info.get("can_view_all_orders"):
+                if st.button("📋 Historique", key="mobile_historique", use_container_width=True):
+                    st.session_state.page = "historique"
+                    st.rerun()
+            if user_info.get("can_add_articles"):
+                if st.button("🔧 Traitement", key="mobile_traitement", use_container_width=True):
+                    st.session_state.page = "traitement"
+                    st.rerun()
+                if st.button("➕ Articles", key="mobile_admin_articles", use_container_width=True):
+                    st.session_state.page = "admin_articles"
+                    st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Bouton de déconnexion proéminent
+        st.markdown("---")
+        if st.button("🚪 Déconnexion", key="mobile_logout", type="primary", use_container_width=True):
+            # Code de déconnexion (même que desktop)
+            user_id = st.session_state.get('current_user', {}).get('id')
+            try:
+                if os.path.exists('temp_session.json'):
+                    os.remove('temp_session.json')
+            except Exception:
+                pass
+            if user_id and USE_POSTGRESQL:
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+                    cursor.execute("DELETE FROM user_cart_sessions WHERE user_id = %s", (user_id,))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+            st.session_state.clear()
+            st.session_state.authenticated = False
+            st.session_state.current_user = {}
+            st.session_state.cart = []
+            st.session_state.page = "login"
+            st.rerun()
+
 def render_navigation():
+    """Navigation adaptative (mobile/desktop)"""
+    user_info = st.session_state.get('current_user', {})
+    
+    # Toggle pour activer le mode mobile (temporaire pour test)
+    mobile_mode = st.sidebar.checkbox("📱 Mode Mobile", value=False, help="Active l'interface optimisée mobile")
+    
+    if mobile_mode:
+        render_mobile_navigation()
+        return
+    
+    # Navigation desktop classique
     user_info = st.session_state.get('current_user', {})
     buttons = [
         ("🛡️ Catalogue", "catalogue"),
@@ -3464,19 +3708,36 @@ def display_list_view(articles_df):
             st.divider()
 
 def show_catalogue():
-    """Affiche le catalogue des articles avec interface moderne"""
-    st.markdown("### 🛡️ Catalogue FLUX/PARA")
+    """Affiche le catalogue des articles avec interface moderne et cache intelligent"""
+    
+    # Header moderne avec statistiques en temps réel
+    col_title, col_stats = st.columns([2, 1])
+    
+    with col_title:
+        st.markdown("### 🛡️ Catalogue FLUX/PARA")
+    
+    with col_stats:
+        # Statistiques rapides avec cache
+        try:
+            stats = get_cached_statistics()
+            st.metric("📊 Total commandes", stats['total_orders'], delta=None)
+        except:
+            pass
     
     budget_used = calculate_cart_total()
     budget_remaining = MAX_CART_AMOUNT - budget_used
     
-    # Affichage du budget avec style moderne
+    # Affichage du budget avec style moderne et barre de progression
     col_budget, col_search = st.columns([1, 2])
     with col_budget:
+        progress_percent = min(budget_used / MAX_CART_AMOUNT, 1.0)
         if budget_remaining > 0:
             st.success(f"💰 Budget: {budget_remaining:.2f}€")
         else:
             st.error(f"🚨 Dépassé: {abs(budget_remaining):.2f}€")
+        
+        # Barre de progression moderne
+        st.progress(progress_percent, text=f"Utilisé: {progress_percent*100:.1f}%")
     
     with col_search:
         # Barre de recherche globale moderne
@@ -3486,13 +3747,20 @@ def show_catalogue():
             help="Recherche dans tous les articles du catalogue"
         )
     
-    # Nouvelles catégories réorganisées par zone de protection
-    categories = [
-        "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
-        "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
-        "Oxycoupage", "EPI Général", "No Touch",
-        "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
-    ]
+    # Catégories avec cache intelligent pour les compteurs
+    try:
+        cached_categories = get_cached_categories()
+        categories = list(cached_categories.keys())
+        category_counts = cached_categories
+    except:
+        # Fallback si le cache échoue
+        categories = [
+            "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
+            "Protection Main", "Protection Pied", "Protection Corps", "Vêtements Haute Visibilité",
+            "Oxycoupage", "EPI Général", "No Touch",
+            "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
+        ]
+        category_counts = {cat: count_articles_in_category(cat) for cat in categories}
     
     # Recherche globale prioritaire
     if search_query and search_query.strip():
@@ -3525,13 +3793,23 @@ def show_catalogue():
         </style>
         """, unsafe_allow_html=True)
         
+        # Affichage moderne avec animations et compteurs
+        st.markdown('<div class="fade-in">', unsafe_allow_html=True)
         cols = st.columns(4)
         for i, category in enumerate(categories):
             with cols[i % 4]:
                 emoji = get_category_emoji(category)
-                if st.button(f"{emoji} {category}", key=f"cat_{category}", use_container_width=True):
-                    st.session_state.selected_category = category
-                    st.rerun()
+                count = category_counts.get(category, 0)
+                if count > 0:
+                    # Style dynamique selon le nombre d'articles
+                    button_type = "primary" if count > 10 else "secondary"
+                    if st.button(f"{emoji} {category}\n📦 {count} articles", 
+                               key=f"cat_{category}", 
+                               use_container_width=True,
+                               type=button_type):
+                        st.session_state.selected_category = category
+                        st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
         
     else:
         category = st.session_state.selected_category
