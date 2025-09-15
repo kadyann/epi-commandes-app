@@ -310,6 +310,18 @@ def init_database():
             )
         """)
         
+        # Table de sessions utilisateur (pour éviter les déconnexions intempestives)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                session_token VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+            )
+        """)
+        
         conn.commit()
         conn.close()
         
@@ -580,6 +592,104 @@ def authenticate_user(username, password):
     except Exception as e:
         st.error(f"Erreur authentification: {e}")
         return None
+
+def create_session_token(user_id):
+    """Crée un token de session unique pour l'utilisateur"""
+    import uuid
+    token = str(uuid.uuid4())
+    
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            # Supprimer les anciennes sessions de cet utilisateur
+            cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+            # Créer une nouvelle session avec expiration 5 minutes
+            cursor.execute("""
+                INSERT INTO user_sessions (user_id, session_token, expires_at) 
+                VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+            """, (user_id, token))
+            conn.commit()
+            conn.close()
+            return token
+    except Exception as e:
+        st.error(f"Erreur création session: {e}")
+    return None
+
+def validate_session_token(user_id, token):
+    """Valide et prolonge un token de session si valide"""
+    try:
+        if USE_POSTGRESQL and token:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            # Vérifier si le token existe et n'est pas expiré
+            cursor.execute("""
+                SELECT user_id FROM user_sessions 
+                WHERE user_id = %s AND session_token = %s AND expires_at > CURRENT_TIMESTAMP
+            """, (user_id, token))
+            result = cursor.fetchone()
+            
+            if result:
+                # Prolonger la session de 5 minutes
+                cursor.execute("""
+                    UPDATE user_sessions 
+                    SET last_activity = CURRENT_TIMESTAMP, 
+                        expires_at = CURRENT_TIMESTAMP + INTERVAL '5 minutes'
+                    WHERE user_id = %s AND session_token = %s
+                """, (user_id, token))
+                conn.commit()
+                conn.close()
+                return True
+            
+            conn.close()
+    except Exception:
+        pass
+    return False
+
+def cleanup_expired_sessions():
+    """Nettoie les sessions expirées"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM user_sessions WHERE expires_at < CURRENT_TIMESTAMP")
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+def get_user_by_id(user_id):
+    """Récupère un utilisateur par son ID"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, username, password_hash, role, equipe, fonction, 
+                       can_add_articles, can_view_stats, can_view_all_orders,
+                       can_move_articles, can_delete_articles
+                FROM users WHERE id = %s
+            """, (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                (uid, user, pwd_hash, role, equipe, fonction, c_add, c_stats, c_all, c_move, c_delete) = row
+                return {
+                    "id": uid,
+                    "username": user,
+                    "role": role,
+                    "equipe": equipe,
+                    "fonction": fonction,
+                    "can_add_articles": bool(c_add),
+                    "can_view_stats": bool(c_stats),
+                    "can_view_all_orders": bool(c_all),
+                    "can_move_articles": bool(c_move),
+                    "can_delete_articles": bool(c_delete)
+                }
+    except Exception:
+        pass
+    return None
 
 def add_user(username, password, role='user', equipe='', fonction='', email=''):
     """Ajoute un nouvel utilisateur"""
@@ -866,9 +976,45 @@ def init_session_state():
     if 'current_user' not in st.session_state:
         st.session_state.current_user = None
 
-    # SÉCURITÉ : Pas de restauration automatique des sessions
-    # La restauration de session doit être explicite et sécurisée
-    # Supprimer tout fichier de session au démarrage pour éviter les fuites de sécurité
+    # Nettoyage des sessions expirées
+    cleanup_expired_sessions()
+    
+    # Restauration de session sécurisée (si token valide dans les 5 dernières minutes)
+    if not st.session_state.get('authenticated') and USE_POSTGRESQL:
+        # Vérifier s'il y a un token de session valide dans les cookies/query params
+        try:
+            # Streamlit ne permet pas l'accès direct aux cookies, mais on peut utiliser les query params
+            query_params = st.query_params
+            session_token = query_params.get('session_token')
+            user_id = query_params.get('user_id')
+            
+            if session_token and user_id:
+                user_id = int(user_id)
+                if validate_session_token(user_id, session_token):
+                    # Restaurer l'utilisateur depuis la base
+                    user = get_user_by_id(user_id)
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.current_user = user
+                        st.session_state.session_token = session_token
+                        st.session_state.page = "catalogue"
+                        
+                        # Charger le panier sauvegardé
+                        try:
+                            conn = psycopg2.connect(DATABASE_URL)
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT cart_json FROM user_cart_sessions WHERE user_id = %s", (user_id,))
+                            row = cursor.fetchone()
+                            conn.close()
+                            if row and row[0]:
+                                cart = json.loads(row[0])
+                                st.session_state.cart = _normalize_cart(cart)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+    
+    # Supprimer les fichiers de session locaux (sécurité)
     try:
         if os.path.exists('temp_session.json'):
             os.remove('temp_session.json')
@@ -1003,6 +1149,11 @@ def show_login():
                     st.session_state.authenticated = True
                     st.session_state.current_user  = user
                     st.session_state.current_user['must_change_password'] = must_change
+                    
+                    # Créer un token de session pour éviter les déconnexions intempestives
+                    session_token = create_session_token(user['id'])
+                    if session_token:
+                        st.session_state.session_token = session_token
                     
                     # Charger le panier sauvegardé (prod)
                     try:
@@ -2243,14 +2394,67 @@ def show_historique():
                 except Exception as e:
                     st.error(f"❌ Erreur affichage articles: {e}")
 
-            # === AJOUTE CE BLOC CI-DESSOUS ===
+            # === FONCTIONS ADMIN ===
             if st.session_state.current_user.get("role") == "admin":
-                if st.button(f"🗑️ Supprimer", key=f"delete_order_{order_id}"):
-                    if delete_commande(order_id):
-                        st.success("✅ Commande supprimée")
-                        st.rerun()
+                col_admin1, col_admin2 = st.columns(2)
+                
+                with col_admin1:
+                    # Bouton pour modifier le contremaître
+                    edit_key = f"edit_contremaitre_{order_id}"
+                    if edit_key not in st.session_state:
+                        st.session_state[edit_key] = False
+                    
+                    if not st.session_state[edit_key]:
+                        if st.button(f"✏️ Modifier contremaître", key=f"edit_btn_{order_id}"):
+                            st.session_state[edit_key] = True
+                            st.rerun()
                     else:
-                        st.error("❌ Erreur suppression")
+                        st.markdown("**✏️ Modifier le contremaître :**")
+                        users_list = get_all_users_list()
+                        if users_list:
+                            with st.form(f"edit_contremaitre_form_{order_id}"):
+                                nouveau_contremaitre = st.selectbox(
+                                    "Nouveau contremaître",
+                                    users_list,
+                                    index=users_list.index(contremaitre) if contremaitre in users_list else 0,
+                                    key=f"new_contremaitre_{order_id}"
+                                )
+                                
+                                col_save, col_cancel = st.columns(2)
+                                with col_save:
+                                    save_btn = st.form_submit_button("💾 Sauvegarder")
+                                with col_cancel:
+                                    cancel_btn = st.form_submit_button("❌ Annuler")
+                                
+                                if save_btn and nouveau_contremaitre != contremaitre:
+                                    if update_commande_contremaitre(order_id, nouveau_contremaitre):
+                                        st.success(f"✅ Contremaître modifié: {contremaitre} → {nouveau_contremaitre}")
+                                        st.session_state[edit_key] = False
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Erreur modification")
+                                elif save_btn:
+                                    st.info("Aucun changement détecté")
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                                
+                                if cancel_btn:
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                        else:
+                            st.error("❌ Impossible de charger la liste des utilisateurs")
+                            if st.button("❌ Annuler", key=f"cancel_edit_{order_id}"):
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                
+                with col_admin2:
+                    # Bouton de suppression
+                    if st.button(f"🗑️ Supprimer", key=f"delete_order_{order_id}"):
+                        if delete_commande(order_id):
+                            st.success("✅ Commande supprimée")
+                            st.rerun()
+                        else:
+                            st.error("❌ Erreur suppression")
     except Exception as e:
         st.error(f"Erreur chargement historique: {e}")
 
@@ -2273,6 +2477,52 @@ def delete_commande(commande_id):
     except Exception as e:
         st.error(f"Erreur suppression commande: {e}")
         return False
+
+def update_commande_contremaitre(commande_id, nouveau_contremaitre):
+    """Met à jour le contremaître d'une commande (admin seulement)"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE commandes SET contremaître = %s WHERE id = %s", 
+                (nouveau_contremaitre, commande_id)
+            )
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE commandes SET contremaître = ? WHERE id = ?", 
+                (nouveau_contremaitre, commande_id)
+            )
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"Erreur modification contremaître: {e}")
+        return False
+
+def get_all_users_list():
+    """Récupère la liste de tous les utilisateurs pour le sélecteur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users ORDER BY username")
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users ORDER BY username")
+        
+        users = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return users
+        
+    except Exception as e:
+        st.error(f"Erreur récupération utilisateurs: {e}")
+        return []
 
 def render_navigation():
     user_info = st.session_state.get('current_user', {})
