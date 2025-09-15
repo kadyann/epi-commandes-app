@@ -5363,7 +5363,12 @@ def show_traitement_commandes():
                     else:
                         st.markdown("**💬 Finaliser le traitement :**")
                         with st.form(f"complete_form_{order_id}"):
-                            commentaire = st.text_area("💬 Commentaire (optionnel)", key=f"comment_{order_id}")
+                            commentaire = st.text_area(
+                                "💬 Commentaire technicien", 
+                                placeholder="Ex: Article en rupture, remplacé par réf. 12345, livraison différée...",
+                                help="Ce commentaire sera visible par le contremaître dans ses commandes",
+                                key=f"comment_{order_id}"
+                            )
                             date_livraison = st.date_input("📅 Date livraison prévue", key=f"delivery_{order_id}")
                             
                             col_submit, col_cancel = st.columns(2)
@@ -5383,10 +5388,47 @@ def show_traitement_commandes():
                                 st.session_state[form_key] = False
                                 st.rerun()
                 elif statut == "Traitée":
-                    if st.button(f"🚚 Marquer comme livrée", key=f"deliver_{order_id}"):
-                        if update_commande_status(order_id, "Livrée"):
-                            st.success("✅ Commande livrée !")
-                            st.rerun()
+                    col_deliver, col_comment = st.columns(2)
+                    
+                    with col_deliver:
+                        if st.button(f"🚚 Marquer comme livrée", key=f"deliver_{order_id}"):
+                            if update_commande_status(order_id, "Livrée"):
+                                st.success("✅ Commande livrée !")
+                                st.rerun()
+                    
+                    with col_comment:
+                        update_comment_key = f"update_comment_{order_id}"
+                        if update_comment_key not in st.session_state:
+                            st.session_state[update_comment_key] = False
+                        
+                        if not st.session_state[update_comment_key]:
+                            if st.button(f"💬 Ajouter commentaire", key=f"add_comment_{order_id}"):
+                                st.session_state[update_comment_key] = True
+                                st.rerun()
+                        else:
+                            with st.form(f"update_comment_form_{order_id}"):
+                                new_comment = st.text_area(
+                                    "💬 Nouveau commentaire", 
+                                    value=commentaire_technicien or "",
+                                    placeholder="Ex: Problème résolu, article livré en urgence...",
+                                    key=f"new_comment_{order_id}"
+                                )
+                                
+                                col_save, col_cancel_comment = st.columns(2)
+                                with col_save:
+                                    save_comment = st.form_submit_button("💾 Sauvegarder")
+                                with col_cancel_comment:
+                                    cancel_comment = st.form_submit_button("❌ Annuler")
+                                
+                                if save_comment:
+                                    if update_commande_status(order_id, "Traitée", user_info['username'], new_comment):
+                                        st.success("💬 Commentaire mis à jour !")
+                                        st.session_state[update_comment_key] = False
+                                        st.rerun()
+                                
+                                if cancel_comment:
+                                    st.session_state[update_comment_key] = False
+                                    st.rerun()
                 
                 # Bouton pour changer l'urgence
                 if st.button(f"⚡ Changer urgence", key=f"urgency_{order_id}"):
