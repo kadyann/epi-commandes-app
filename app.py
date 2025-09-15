@@ -422,6 +422,630 @@ def get_cached_categories():
             categories[category] = count
     return categories
 
+# === INTELLIGENCE ARTIFICIELLE ===
+@st.cache_data(ttl=900, show_spinner="🤖 Analyse IA en cours...")
+def get_ai_suggestions_for_user(user_id, current_cart=None):
+    """Génère des suggestions IA basées sur l'historique utilisateur"""
+    try:
+        if not USE_POSTGRESQL or not user_id:
+            return []
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Récupérer l'historique des commandes de l'utilisateur
+        cursor.execute("""
+            SELECT articles_json FROM commandes 
+            WHERE user_id = %s 
+            ORDER BY date DESC 
+            LIMIT 10
+        """, (user_id,))
+        
+        user_orders = cursor.fetchall()
+        
+        # Récupérer les articles les plus commandés par l'équipe
+        cursor.execute("""
+            SELECT c.articles_json FROM commandes c
+            JOIN users u ON c.contremaître = u.username
+            WHERE u.equipe = (SELECT equipe FROM users WHERE id = %s)
+            ORDER BY c.date DESC 
+            LIMIT 20
+        """, (user_id,))
+        
+        team_orders = cursor.fetchall()
+        conn.close()
+        
+        # Analyser les patterns
+        article_frequency = {}
+        article_combinations = {}
+        
+        # Analyser l'historique personnel
+        for order in user_orders:
+            if order[0]:
+                try:
+                    articles = json.loads(order[0])
+                    if not isinstance(articles, list):
+                        articles = [articles]
+                    
+                    for article in articles:
+                        if isinstance(article, dict):
+                            nom = article.get('Nom', '')
+                            if nom:
+                                article_frequency[nom] = article_frequency.get(nom, 0) + 2  # Poids plus fort pour l'historique personnel
+                except:
+                    continue
+        
+        # Analyser l'historique d'équipe
+        for order in team_orders:
+            if order[0]:
+                try:
+                    articles = json.loads(order[0])
+                    if not isinstance(articles, list):
+                        articles = [articles]
+                    
+                    for article in articles:
+                        if isinstance(article, dict):
+                            nom = article.get('Nom', '')
+                            if nom:
+                                article_frequency[nom] = article_frequency.get(nom, 0) + 1
+                except:
+                    continue
+        
+        # Filtrer les articles déjà dans le panier
+        current_cart_items = set()
+        if current_cart:
+            for item in current_cart:
+                if isinstance(item, dict):
+                    current_cart_items.add(item.get('Nom', ''))
+        
+        # Générer les suggestions (exclure les articles déjà dans le panier)
+        suggestions = []
+        articles_df = load_articles()
+        
+        for nom, freq in sorted(article_frequency.items(), key=lambda x: x[1], reverse=True)[:10]:
+            if nom not in current_cart_items:
+                # Trouver l'article dans le catalogue
+                matching_articles = articles_df[articles_df['Nom'].str.contains(nom, case=False, na=False)]
+                if not matching_articles.empty:
+                    article = matching_articles.iloc[0].to_dict()
+                    suggestions.append({
+                        'article': article,
+                        'score': freq,
+                        'reason': f"Commandé {freq} fois récemment"
+                    })
+        
+        return suggestions[:5]  # Top 5 suggestions
+        
+    except Exception as e:
+        return []
+
+@st.cache_data(ttl=300)
+def detect_cart_duplicates(cart):
+    """Détecte les doublons potentiels dans le panier"""
+    if not cart or len(cart) < 2:
+        return []
+    
+    duplicates = []
+    seen_items = {}
+    
+    for i, item in enumerate(cart):
+        if isinstance(item, dict):
+            nom = item.get('Nom', '').lower().strip()
+            if nom:
+                # Détection exacte
+                if nom in seen_items:
+                    duplicates.append({
+                        'type': 'exact',
+                        'items': [seen_items[nom], i],
+                        'message': f"Doublon exact détecté: {item.get('Nom', '')}"
+                    })
+                else:
+                    seen_items[nom] = i
+                    
+                # Détection similaire (même base, tailles différentes)
+                nom_base = nom.split(' taille')[0] if 'taille' in nom else nom
+                for existing_nom, existing_idx in seen_items.items():
+                    if existing_nom != nom:
+                        existing_base = existing_nom.split(' taille')[0] if 'taille' in existing_nom else existing_nom
+                        if nom_base == existing_base and abs(len(nom) - len(existing_nom)) < 10:
+                            duplicates.append({
+                                'type': 'similar',
+                                'items': [existing_idx, i],
+                                'message': f"Articles similaires: {cart[existing_idx].get('Nom', '')} et {item.get('Nom', '')}"
+                            })
+    
+    return duplicates
+
+def get_contextual_recommendations(current_article):
+    """Recommandations contextuelles basées sur l'article sélectionné"""
+    if not isinstance(current_article, dict):
+        return []
+    
+    current_name = current_article.get('Nom', '').lower()
+    current_category = current_article.get('Description', '')
+    
+    articles_df = load_articles()
+    recommendations = []
+    
+    # Règles de recommandation contextuelle
+    context_rules = {
+        'casque': ['lunette', 'bouchon', 'protection auditive'],
+        'gant': ['manche', 'protection', 'crème'],
+        'chaussure': ['semelle', 'chaussette', 'protection pied'],
+        'masque': ['filtre', 'cartouche', 'protection respiratoire'],
+        'soudage': ['cagoule', 'gant', 'protection', 'tablier'],
+        'oxycoup': ['tablier', 'gant', 'protection chaleur']
+    }
+    
+    # Trouver les recommandations basées sur les règles
+    for keyword, related_items in context_rules.items():
+        if keyword in current_name:
+            for related in related_items:
+                matching = articles_df[
+                    articles_df['Nom'].str.contains(related, case=False, na=False) &
+                    (articles_df['Nom'] != current_article.get('Nom', ''))
+                ]
+                if not matching.empty:
+                    for _, article in matching.head(2).iterrows():
+                        recommendations.append({
+                            'article': article.to_dict(),
+                            'reason': f"Complément recommandé avec {keyword}"
+                        })
+    
+    # Recommandations par catégorie
+    if current_category:
+        same_category = articles_df[
+            (articles_df['Description'] == current_category) &
+            (articles_df['Nom'] != current_article.get('Nom', ''))
+        ]
+        if not same_category.empty:
+            for _, article in same_category.head(3).iterrows():
+                recommendations.append({
+                    'article': article.to_dict(),
+                    'reason': f"Même catégorie: {current_category}"
+                })
+    
+    return recommendations[:4]  # Limiter à 4 recommandations
+
+# === ANALYTICS AVANCÉS ===
+@st.cache_data(ttl=1800, show_spinner="📊 Génération des analytics avancés...")
+def get_advanced_analytics():
+    """Génère des analytics avancés avec prédictions"""
+    try:
+        if not USE_POSTGRESQL:
+            return None
+            
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Données de base
+        cursor.execute("""
+            SELECT 
+                DATE_TRUNC('month', date) as mois,
+                COUNT(*) as nb_commandes,
+                SUM(total_prix) as montant_total,
+                AVG(total_prix) as montant_moyen,
+                equipe,
+                contremaître
+            FROM commandes 
+            WHERE date >= NOW() - INTERVAL '12 months'
+            GROUP BY DATE_TRUNC('month', date), equipe, contremaître
+            ORDER BY mois DESC
+        """)
+        
+        monthly_data = cursor.fetchall()
+        
+        # Top articles les plus commandés
+        cursor.execute("""
+            SELECT 
+                articles_json,
+                date,
+                total_prix,
+                equipe
+            FROM commandes 
+            WHERE date >= NOW() - INTERVAL '6 months'
+            ORDER BY date DESC
+        """)
+        
+        orders_data = cursor.fetchall()
+        conn.close()
+        
+        # Analyse des articles
+        article_stats = {}
+        monthly_trends = {}
+        team_performance = {}
+        
+        for order in orders_data:
+            if order[0]:  # articles_json
+                try:
+                    articles = json.loads(order[0])
+                    if not isinstance(articles, list):
+                        articles = [articles]
+                    
+                    month_key = order[1].strftime('%Y-%m') if order[1] else 'unknown'
+                    team = order[3] or 'Unknown'
+                    
+                    for article in articles:
+                        if isinstance(article, dict):
+                            nom = article.get('Nom', 'Unknown')
+                            prix = float(article.get('Prix', 0))
+                            
+                            # Stats par article
+                            if nom not in article_stats:
+                                article_stats[nom] = {
+                                    'count': 0,
+                                    'total_value': 0,
+                                    'avg_price': 0,
+                                    'teams': set()
+                                }
+                            
+                            article_stats[nom]['count'] += 1
+                            article_stats[nom]['total_value'] += prix
+                            article_stats[nom]['teams'].add(team)
+                            article_stats[nom]['avg_price'] = article_stats[nom]['total_value'] / article_stats[nom]['count']
+                            
+                            # Tendances mensuelles
+                            if month_key not in monthly_trends:
+                                monthly_trends[month_key] = {'orders': 0, 'value': 0, 'articles': 0}
+                            monthly_trends[month_key]['articles'] += 1
+                            monthly_trends[month_key]['value'] += prix
+                    
+                    # Performance par équipe
+                    if team not in team_performance:
+                        team_performance[team] = {'orders': 0, 'total_value': 0, 'avg_order': 0}
+                    team_performance[team]['orders'] += 1
+                    team_performance[team]['total_value'] += order[2] or 0
+                    team_performance[team]['avg_order'] = team_performance[team]['total_value'] / team_performance[team]['orders']
+                    
+                except:
+                    continue
+        
+        # Calcul des prédictions simples (tendance linéaire)
+        predictions = {}
+        if len(monthly_trends) >= 3:
+            sorted_months = sorted(monthly_trends.keys())
+            recent_months = sorted_months[-3:]
+            
+            # Prédiction basée sur la moyenne des 3 derniers mois
+            avg_orders = sum(monthly_trends[m]['articles'] for m in recent_months) / len(recent_months)
+            avg_value = sum(monthly_trends[m]['value'] for m in recent_months) / len(recent_months)
+            
+            # Calcul de la tendance (croissance/décroissance)
+            if len(recent_months) >= 2:
+                trend_orders = (monthly_trends[recent_months[-1]]['articles'] - monthly_trends[recent_months[0]]['articles']) / len(recent_months)
+                trend_value = (monthly_trends[recent_months[-1]]['value'] - monthly_trends[recent_months[0]]['value']) / len(recent_months)
+            else:
+                trend_orders = 0
+                trend_value = 0
+            
+            predictions = {
+                'next_month_articles': max(0, avg_orders + trend_orders),
+                'next_month_value': max(0, avg_value + trend_value),
+                'trend_direction': 'up' if trend_value > 0 else 'down' if trend_value < 0 else 'stable',
+                'confidence': min(100, max(50, 80 - abs(trend_value) / avg_value * 100)) if avg_value > 0 else 50
+            }
+        
+        return {
+            'article_stats': article_stats,
+            'monthly_trends': monthly_trends,
+            'team_performance': team_performance,
+            'predictions': predictions,
+            'top_articles': sorted(article_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10],
+            'top_value_articles': sorted(article_stats.items(), key=lambda x: x[1]['total_value'], reverse=True)[:10]
+        }
+        
+    except Exception as e:
+        st.error(f"Erreur analytics: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_budget_alerts():
+    """Génère des alertes automatiques sur les budgets"""
+    try:
+        if not USE_POSTGRESQL:
+            return []
+            
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Alertes par équipe - dépassements récents
+        cursor.execute("""
+            SELECT 
+                equipe,
+                SUM(total_prix) as total_mensuel,
+                COUNT(*) as nb_commandes,
+                AVG(total_prix) as moyenne_commande
+            FROM commandes 
+            WHERE date >= DATE_TRUNC('month', CURRENT_DATE)
+            GROUP BY equipe
+            HAVING SUM(total_prix) > 5000  -- Seuil d'alerte
+            ORDER BY total_mensuel DESC
+        """)
+        
+        budget_alerts = []
+        for row in cursor.fetchall():
+            equipe, total, nb_cmd, moyenne = row
+            budget_alerts.append({
+                'type': 'budget_high',
+                'equipe': equipe,
+                'message': f"Équipe {equipe}: {total:.2f}€ ce mois ({nb_cmd} commandes)",
+                'severity': 'high' if total > 10000 else 'medium',
+                'value': total
+            })
+        
+        # Alertes commandes inhabituellement élevées
+        cursor.execute("""
+            SELECT contremaître, total_prix, date, equipe
+            FROM commandes 
+            WHERE total_prix > %s 
+            AND date >= CURRENT_DATE - INTERVAL '7 days'
+            ORDER BY total_prix DESC
+        """, (MAX_CART_AMOUNT * 1.5,))
+        
+        for row in cursor.fetchall():
+            contremaitre, total, date, equipe = row
+            budget_alerts.append({
+                'type': 'order_high',
+                'message': f"Commande élevée: {contremaitre} ({equipe}) - {total:.2f}€",
+                'severity': 'high',
+                'date': date,
+                'value': total
+            })
+        
+        conn.close()
+        return budget_alerts
+        
+    except Exception as e:
+        return []
+
+def export_analytics_to_excel(analytics_data):
+    """Exporte les analytics vers Excel"""
+    try:
+        import io
+        from datetime import datetime
+        
+        # Créer un buffer en mémoire
+        output = io.BytesIO()
+        
+        # Créer un DataFrame avec les données principales
+        if analytics_data and 'top_articles' in analytics_data:
+            # Préparer les données pour Excel
+            excel_data = []
+            for nom, stats in analytics_data['top_articles']:
+                excel_data.append({
+                    'Article': nom,
+                    'Quantité commandée': stats['count'],
+                    'Valeur totale (€)': round(stats['total_value'], 2),
+                    'Prix moyen (€)': round(stats['avg_price'], 2),
+                    'Équipes utilisatrices': len(stats['teams'])
+                })
+            
+            df = pd.DataFrame(excel_data)
+            
+            # Sauvegarder en Excel
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Top Articles', index=False)
+                
+                # Ajouter une feuille avec les tendances mensuelles
+                if 'monthly_trends' in analytics_data:
+                    monthly_df = pd.DataFrame([
+                        {
+                            'Mois': month,
+                            'Nombre d\'articles': data['articles'],
+                            'Valeur totale (€)': round(data['value'], 2)
+                        }
+                        for month, data in analytics_data['monthly_trends'].items()
+                    ])
+                    monthly_df.to_excel(writer, sheet_name='Tendances Mensuelles', index=False)
+            
+            output.seek(0)
+            return output
+    except Exception as e:
+        st.error(f"Erreur export Excel: {e}")
+        return None
+
+def show_advanced_analytics():
+    """Dashboard analytique avancé avec prédictions et alertes"""
+    if not st.session_state.current_user.get("can_view_stats"):
+        st.error("⛔ Accès refusé - Réservé aux gestionnaires")
+        return
+
+    st.markdown("# 📊 Dashboard Analytique Avancé")
+    st.markdown("*Intelligence d'affaires pour l'optimisation des commandes*")
+    
+    # Récupération des données avec cache
+    analytics_data = get_advanced_analytics()
+    budget_alerts = get_budget_alerts()
+    
+    if not analytics_data:
+        st.warning("📊 Données insuffisantes pour générer des analytics avancés")
+        return
+    
+    # === ALERTES EN TEMPS RÉEL ===
+    if budget_alerts:
+        st.markdown("## 🚨 Alertes Automatiques")
+        for alert in budget_alerts[:5]:  # Top 5 alertes
+            if alert['severity'] == 'high':
+                st.error(f"🔴 **{alert['message']}**")
+            else:
+                st.warning(f"🟡 **{alert['message']}**")
+    
+    # === KPIS PRINCIPAUX ===
+    st.markdown("## 📈 KPIs en Temps Réel")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_orders = sum(stats['count'] for stats in analytics_data['article_stats'].values())
+        st.metric(
+            "📦 Articles Commandés",
+            f"{total_orders:,}",
+            delta=f"+{int(analytics_data.get('predictions', {}).get('next_month_articles', 0))} prévu"
+        )
+    
+    with col2:
+        total_value = sum(stats['total_value'] for stats in analytics_data['article_stats'].values())
+        st.metric(
+            "💰 Valeur Totale",
+            f"{total_value:,.0f}€",
+            delta=f"+{analytics_data.get('predictions', {}).get('next_month_value', 0):.0f}€ prévu"
+        )
+    
+    with col3:
+        active_teams = len(analytics_data['team_performance'])
+        avg_order_value = total_value / max(total_orders, 1)
+        st.metric(
+            "👥 Équipes Actives",
+            active_teams,
+            delta=f"{avg_order_value:.1f}€ moy/article"
+        )
+    
+    with col4:
+        predictions = analytics_data.get('predictions', {})
+        trend_icon = "📈" if predictions.get('trend_direction') == 'up' else "📉" if predictions.get('trend_direction') == 'down' else "➡️"
+        confidence = predictions.get('confidence', 0)
+        st.metric(
+            f"{trend_icon} Tendance",
+            f"{confidence:.0f}% confiance",
+            delta=f"Prédiction {predictions.get('trend_direction', 'stable')}"
+        )
+    
+    # === GRAPHIQUES INTERACTIFS ===
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown("### 📊 Tendances Mensuelles")
+        if analytics_data['monthly_trends']:
+            months = list(analytics_data['monthly_trends'].keys())
+            values = [data['value'] for data in analytics_data['monthly_trends'].values()]
+            articles_count = [data['articles'] for data in analytics_data['monthly_trends'].values()]
+            
+            # Graphique combiné avec Plotly
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=months, y=values,
+                mode='lines+markers',
+                name='Valeur (€)',
+                line=dict(color='#1f77b4', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig.add_trace(go.Bar(
+                x=months, y=articles_count,
+                name='Nb Articles',
+                yaxis='y2',
+                opacity=0.7,
+                marker_color='#ff7f0e'
+            ))
+            
+            fig.update_layout(
+                title="Évolution des Commandes",
+                xaxis_title="Mois",
+                yaxis=dict(title="Valeur (€)", side='left'),
+                yaxis2=dict(title="Nombre d'Articles", side='right', overlaying='y'),
+                hovermode='x unified',
+                template='plotly_white'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col_right:
+        st.markdown("### 🏆 Performance par Équipe")
+        if analytics_data['team_performance']:
+            teams = list(analytics_data['team_performance'].keys())
+            team_values = [data['total_value'] for data in analytics_data['team_performance'].values()]
+            
+            import plotly.express as px
+            fig_pie = px.pie(
+                values=team_values,
+                names=teams,
+                title="Répartition des Dépenses par Équipe",
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_pie, use_container_width=True)
+    
+    # === TOP ARTICLES AVEC PRÉDICTIONS ===
+    st.markdown("### 🔥 Top Articles & Analyse Prédictive")
+    
+    tab1, tab2, tab3 = st.tabs(["📊 Top Quantité", "💰 Top Valeur", "🔮 Prédictions"])
+    
+    with tab1:
+        if analytics_data['top_articles']:
+            top_data = []
+            for nom, stats in analytics_data['top_articles'][:10]:
+                top_data.append({
+                    'Article': nom[:50],
+                    'Quantité': stats['count'],
+                    'Valeur Totale': f"{stats['total_value']:.0f}€",
+                    'Prix Moyen': f"{stats['avg_price']:.2f}€",
+                    'Équipes': len(stats['teams'])
+                })
+            
+            df_display = pd.DataFrame(top_data)
+            st.dataframe(df_display, use_container_width=True)
+    
+    with tab2:
+        if analytics_data['top_value_articles']:
+            # Graphique en barres horizontales
+            names = [item[0][:30] for item in analytics_data['top_value_articles'][:10]]
+            values = [item[1]['total_value'] for item in analytics_data['top_value_articles'][:10]]
+            
+            fig_bar = px.bar(
+                x=values, y=names,
+                orientation='h',
+                title="Top 10 Articles par Valeur Totale",
+                labels={'x': 'Valeur (€)', 'y': 'Articles'},
+                color=values,
+                color_continuous_scale='Blues'
+            )
+            fig_bar.update_layout(height=500)
+            st.plotly_chart(fig_bar, use_container_width=True)
+    
+    with tab3:
+        predictions = analytics_data.get('predictions', {})
+        if predictions:
+            st.markdown("#### 🔮 Prédictions Mois Prochain")
+            
+            pred_col1, pred_col2, pred_col3 = st.columns(3)
+            
+            with pred_col1:
+                st.metric(
+                    "📦 Articles Prévus",
+                    f"{predictions.get('next_month_articles', 0):.0f}",
+                    delta=f"{predictions.get('trend_direction', 'stable')}"
+                )
+            
+            with pred_col2:
+                st.metric(
+                    "💰 Valeur Prévue",
+                    f"{predictions.get('next_month_value', 0):.0f}€",
+                    delta=f"{predictions.get('confidence', 0):.0f}% confiance"
+                )
+            
+            with pred_col3:
+                trend_direction = predictions.get('trend_direction', 'stable')
+                if trend_direction == 'up':
+                    st.success("📈 Tendance à la hausse")
+                elif trend_direction == 'down':
+                    st.error("📉 Tendance à la baisse")
+                else:
+                    st.info("➡️ Tendance stable")
+    
+    # === EXPORT ===
+    st.markdown("### 📤 Exports")
+    
+    if st.button("📊 Export Excel Détaillé", type="primary"):
+        excel_data = export_analytics_to_excel(analytics_data)
+        if excel_data:
+            st.download_button(
+                label="💾 Télécharger Excel",
+                data=excel_data.getvalue(),
+                file_name=f"analytics_flux_para_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
 # === FONCTIONS BASE DE DONNÉES ===
 def init_database():
     """Initialise la base de données"""
@@ -2869,7 +3493,7 @@ def main():
                 st.warning("⛔ Accès réservé.")
         elif page == "stats":
             if (st.session_state.current_user or {}).get("can_view_stats"):
-                show_stats()
+                show_advanced_analytics()
             else:
                 st.warning("⛔ Accès réservé.")
         elif page == "mes_commandes":
