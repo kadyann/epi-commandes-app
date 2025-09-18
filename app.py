@@ -277,20 +277,7 @@ st.markdown("""
     transform: translateX(5px);
 }
 
-.duplicate-alert {
-    background: linear-gradient(45deg, #ff9a56, #ff6b6b);
-    color: white;
-    padding: 10px;
-    border-radius: 10px;
-    margin: 5px 0;
-    animation: shake 0.5s ease-in-out;
-}
-
-@keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    25% { transform: translateX(-5px); }
-    75% { transform: translateX(5px); }
-}
+/* Styles de détection de doublons supprimés */
 </style>
 """, unsafe_allow_html=True)
 
@@ -559,41 +546,7 @@ def get_ai_suggestions_for_user(user_id, current_cart=None):
         return []
 
 @st.cache_data(ttl=300)
-def detect_cart_duplicates(cart):
-    """Détecte les doublons potentiels dans le panier"""
-    if not cart or len(cart) < 2:
-        return []
-    
-    duplicates = []
-    seen_items = {}
-    
-    for i, item in enumerate(cart):
-        if isinstance(item, dict):
-            nom = item.get('Nom', '').lower().strip()
-            if nom:
-                # Détection exacte
-                if nom in seen_items:
-                    duplicates.append({
-                        'type': 'exact',
-                        'items': [seen_items[nom], i],
-                        'message': f"Doublon exact détecté: {item.get('Nom', '')}"
-                    })
-                else:
-                    seen_items[nom] = i
-                    
-                # Détection similaire (même base, tailles différentes)
-                nom_base = nom.split(' taille')[0] if 'taille' in nom else nom
-                for existing_nom, existing_idx in seen_items.items():
-                    if existing_nom != nom:
-                        existing_base = existing_nom.split(' taille')[0] if 'taille' in existing_nom else existing_nom
-                        if nom_base == existing_base and abs(len(nom) - len(existing_nom)) < 10:
-                            duplicates.append({
-                                'type': 'similar',
-                                'items': [existing_idx, i],
-                                'message': f"Articles similaires: {cart[existing_idx].get('Nom', '')} et {item.get('Nom', '')}"
-                            })
-    
-    return duplicates
+# Fonction de détection de doublons supprimée (fonctionnalité gênante)
 
 def get_contextual_recommendations(current_article):
     """Recommandations contextuelles basées sur l'article sélectionné"""
@@ -682,35 +635,7 @@ def show_ai_suggestions_panel(user_id, current_cart):
         
         st.markdown('</div>', unsafe_allow_html=True)
 
-def show_duplicate_detection_panel(current_cart):
-    """Panneau de détection de doublons"""
-    duplicates = detect_cart_duplicates(current_cart)
-    
-    if duplicates:
-        st.markdown("### 🚨 Détection de Doublons")
-        
-        for duplicate in duplicates:
-            if duplicate['type'] == 'exact':
-                st.markdown(f"""
-                <div class="duplicate-alert">
-                    🔴 <strong>Doublon exact détecté!</strong><br>
-                    {duplicate['message']}
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if st.button(f"🗑️ Supprimer le doublon", key=f"remove_dup_{duplicate['items'][1]}"):
-                    if duplicate['items'][1] < len(current_cart):
-                        current_cart.pop(duplicate['items'][1])
-                        st.success("✅ Doublon supprimé!")
-                        st.rerun()
-            
-            elif duplicate['type'] == 'similar':
-                st.markdown(f"""
-                <div class="duplicate-alert" style="background: linear-gradient(45deg, #f39c12, #e67e22);">
-                    🟡 <strong>Articles similaires détectés</strong><br>
-                    {duplicate['message']}
-                </div>
-                """, unsafe_allow_html=True)
+# Fonction de détection de doublons supprimée (fonctionnalité gênante)
 
 # === ANALYTICS AVANCÉS ===
 @st.cache_data(ttl=1800, show_spinner="📊 Génération des analytics avancés...")
@@ -2275,7 +2200,7 @@ def show_cart():
         show_ai_suggestions_panel(user_id, st.session_state.cart)
         
         # Détection de doublons dans le panier
-        show_duplicate_detection_panel(st.session_state.cart)
+        # Détection de doublons supprimée (fonctionnalité gênante)
         
         # Recommandations contextuelles basées sur le dernier article ajouté
         if st.session_state.cart:
@@ -4544,9 +4469,7 @@ def show_catalogue():
     if ai_enabled and user_id:
         show_ai_suggestions_panel(user_id, current_cart)
     
-    # Détection de doublons
-    if current_cart:
-        show_duplicate_detection_panel(current_cart)
+    # Détection de doublons supprimée (gênante et s'accumule)
     
     
     # Recherche globale prioritaire
