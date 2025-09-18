@@ -5211,22 +5211,59 @@ def update_user_permissions(user_id, permissions):
             UPDATE users 
             SET can_add_articles = %s, 
                 can_view_stats = %s, 
-                can_view_all_orders = %s
+                can_view_all_orders = %s,
+                can_move_articles = %s,
+                can_delete_articles = %s
             WHERE id = %s
         """, (
             permissions['can_add_articles'],
             permissions['can_view_stats'], 
             permissions['can_view_all_orders'],
+            permissions['can_move_articles'],
+            permissions['can_delete_articles'],
             user_id
         ))
         conn.commit()
         conn.close()
         st.cache_data.clear()
+        
+        # Recharger les permissions de l'utilisateur connecté si c'est lui qui est modifié
+        if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
+            reload_current_user_permissions()
+        
         return True
         
     except Exception as e:
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
+
+def reload_current_user_permissions():
+    """Recharge les permissions de l'utilisateur connecté depuis la base"""
+    if not st.session_state.get('current_user'):
+        return
+    
+    try:
+        username = st.session_state.current_user.get('username')
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT role, can_add_articles, can_view_stats, can_view_all_orders, 
+                   can_move_articles, can_delete_articles
+            FROM users WHERE username = %s
+        """, (username,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            st.session_state.current_user['role'] = result[0]
+            st.session_state.current_user['can_add_articles'] = bool(result[1])
+            st.session_state.current_user['can_view_stats'] = bool(result[2])
+            st.session_state.current_user['can_view_all_orders'] = bool(result[3])
+            st.session_state.current_user['can_move_articles'] = bool(result[4])
+            st.session_state.current_user['can_delete_articles'] = bool(result[5])
+            
+    except Exception as e:
+        st.error(f"Erreur rechargement permissions: {e}")
 
 def create_user(username, password, equipe, fonction, couleur_preferee="DT770", can_add_articles=0, can_view_stats=0, can_view_all_orders=0, role="user"):
     """Crée un utilisateur (Postgres uniquement) avec must_change_password à True et mot de passe initial basé sur la couleur préférée."""
@@ -5512,22 +5549,59 @@ def update_user_permissions(user_id, permissions):
             UPDATE users 
             SET can_add_articles = ?, 
                 can_view_stats = ?, 
-                can_view_all_orders = ?
+                can_view_all_orders = ?,
+                can_move_articles = ?,
+                can_delete_articles = ?
             WHERE id = ?
         """, (
             permissions['can_add_articles'],
             permissions['can_view_stats'], 
             permissions['can_view_all_orders'],
+            permissions['can_move_articles'],
+            permissions['can_delete_articles'],
             user_id
         ))
         
         conn.commit()
         conn.close()
+        
+        # Recharger les permissions de l'utilisateur connecté si c'est lui qui est modifié
+        if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
+            reload_current_user_permissions_sqlite()
+        
         return True
         
     except Exception as e:
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
+
+def reload_current_user_permissions_sqlite():
+    """Recharge les permissions de l'utilisateur connecté depuis SQLite"""
+    if not st.session_state.get('current_user'):
+        return
+    
+    try:
+        username = st.session_state.current_user.get('username')
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT role, can_add_articles, can_view_stats, can_view_all_orders, 
+                   can_move_articles, can_delete_articles
+            FROM users WHERE username = ?
+        """, (username,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            st.session_state.current_user['role'] = result[0]
+            st.session_state.current_user['can_add_articles'] = bool(result[1])
+            st.session_state.current_user['can_view_stats'] = bool(result[2])
+            st.session_state.current_user['can_view_all_orders'] = bool(result[3])
+            st.session_state.current_user['can_move_articles'] = bool(result[4])
+            st.session_state.current_user['can_delete_articles'] = bool(result[5])
+            
+    except Exception as e:
+        st.error(f"Erreur rechargement permissions SQLite: {e}")
 
 # --- À placer juste au-dessus des fonctions qui accèdent à la table users ---
 def ensure_users_table():
