@@ -3597,10 +3597,29 @@ def render_navigation():
                     st.session_state.page = page
                     st.rerun()
 
+def ensure_users_permission_columns():
+    """Ajoute can_move_articles et can_delete_articles si manquants (Postgres)"""
+    if not USE_POSTGRESQL:
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS can_move_articles BOOLEAN DEFAULT FALSE")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS can_delete_articles BOOLEAN DEFAULT FALSE")
+        conn.commit()
+        conn.close()
+    except Exception:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+
 def main():
     """Fonction principale de l'application"""
     # Initialisation
     init_database()
+    ensure_users_permission_columns()
     init_users_db()
     init_session_state()
     
@@ -5377,36 +5396,51 @@ def user_can_view_all_orders():
 
 
 def update_user_permissions(user_id, permissions):
-    """Met à jour les permissions (Postgres uniquement)"""
+    """Met à jour les permissions (Postgres ou SQLite selon config)"""
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE users 
-            SET can_add_articles = %s, 
-                can_view_stats = %s, 
-                can_view_all_orders = %s,
-                can_move_articles = %s,
-                can_delete_articles = %s
-            WHERE id = %s
-        """, (
-            permissions['can_add_articles'],
-            permissions['can_view_stats'], 
-            permissions['can_view_all_orders'],
-            permissions['can_move_articles'],
-            permissions['can_delete_articles'],
-            user_id
-        ))
-        conn.commit()
-        conn.close()
+        # Postgres attend des BOOLEAN, pas des int (1/0)
+        def to_bool(v):
+            return bool(v) if v is not None else False
+        p_add = to_bool(permissions.get('can_add_articles', False))
+        p_stats = to_bool(permissions.get('can_view_stats', False))
+        p_all = to_bool(permissions.get('can_view_all_orders', False))
+        p_move = to_bool(permissions.get('can_move_articles', False))
+        p_del = to_bool(permissions.get('can_delete_articles', False))
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users 
+                SET can_add_articles = %s, 
+                    can_view_stats = %s, 
+                    can_view_all_orders = %s,
+                    can_move_articles = %s,
+                    can_delete_articles = %s
+                WHERE id = %s
+            """, (p_add, p_stats, p_all, p_move, p_del, user_id))
+            conn.commit()
+            conn.close()
+            if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
+                reload_current_user_permissions()
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            # SQLite utilise INTEGER (0/1) pour ces colonnes
+            cursor.execute("""
+                UPDATE users 
+                SET can_add_articles = ?, 
+                    can_view_stats = ?, 
+                    can_view_all_orders = ?,
+                    can_move_articles = ?,
+                    can_delete_articles = ?
+                WHERE id = ?
+            """, (int(p_add), int(p_stats), int(p_all), int(p_move), int(p_del), user_id))
+            conn.commit()
+            conn.close()
+            if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
+                reload_current_user_permissions_sqlite()
         st.cache_data.clear()
-        
-        # Recharger les permissions de l'utilisateur connecté si c'est lui qui est modifié
-        if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
-            reload_current_user_permissions()
-        
         return True
-        
     except Exception as e:
         st.error(f"Erreur mise à jour permissions: {e}")
         return False
@@ -5712,42 +5746,6 @@ def delete_user(user_id):
         
     except Exception as e:
         return False, f"Erreur suppression: {e}"
-
-def update_user_permissions(user_id, permissions):
-    """Met à jour toutes les permissions d'un utilisateur"""
-    try:
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            UPDATE users 
-            SET can_add_articles = ?, 
-                can_view_stats = ?, 
-                can_view_all_orders = ?,
-                can_move_articles = ?,
-                can_delete_articles = ?
-            WHERE id = ?
-        """, (
-            permissions['can_add_articles'],
-            permissions['can_view_stats'], 
-            permissions['can_view_all_orders'],
-            permissions['can_move_articles'],
-            permissions['can_delete_articles'],
-            user_id
-        ))
-        
-        conn.commit()
-        conn.close()
-        
-        # Recharger les permissions de l'utilisateur connecté si c'est lui qui est modifié
-        if st.session_state.get('current_user') and st.session_state.current_user.get('id') == user_id:
-            reload_current_user_permissions_sqlite()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Erreur mise à jour permissions: {e}")
-        return False
 
 def reload_current_user_permissions_sqlite():
     """Recharge les permissions de l'utilisateur connecté depuis SQLite"""
