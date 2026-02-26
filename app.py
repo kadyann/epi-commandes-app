@@ -3783,6 +3783,7 @@ def show_admin_articles():
 
     with tabs[1]:   # ➕ Ajouter article
         st.markdown("#### ➕ Ajouter un nouvel article au catalogue")
+        st.caption("💡 **Tailles multiples** : cochez « Plusieurs tailles » et indiquez les tailles (ex: 43, 44, 45 ou S, M, L, XL) — chaque taille sera créée automatiquement.")
         # Nouvelles catégories réorganisées par zone de protection
         categories = [
             "Protection Tête", "Protection Auditive", "Protection Oculaire", "Protection Respiratoire",
@@ -3791,20 +3792,45 @@ def show_admin_articles():
             "Outils", "Éclairage", "Marquage", "Bureau", "Nettoyage", "Hygiène", "Divers"
         ]
         with st.form("ajout_article_form"):
-            ref = st.text_input("N° Référence*")
-            nom = st.text_input("Nom*")
+            multi_tailles = st.checkbox("📏 Article avec plusieurs tailles (pointure, S, M, L, XL…)", value=False)
+            ref = st.text_input("N° Référence* (court, ex: CHAU-S3)", max_chars=40, help="Max 50 caractères. Pour plusieurs tailles: base sans la taille (ex: CHAU-S3)")
+            nom = st.text_input("Nom* (sans la taille)", help="Ex: Chaussure de sécurité S3 bruleur — la taille sera ajoutée automatiquement")
+            tailles_input = st.text_input("Tailles* (séparées par des virgules)", placeholder="43, 44, 45, 46 ou S, M, L, XL, XXL", label_visibility="visible" if multi_tailles else "collapsed") if multi_tailles else ""
             description = st.selectbox("Description* (catégorie)", categories)
-            prix = st.number_input("Prix*", min_value=0.01, step=0.01, format="%.2f")
+            prix = st.number_input("Prix*", min_value=0.0, step=0.01, format="%.2f")
             unite = st.text_input("Unité*", value="Par unité")
             submitted = st.form_submit_button("Ajouter l'article")
             if submitted:
-                ok, msg = add_article_to_csv(ref, nom, description, prix, unite)
-                if ok:
-                    st.success(msg)
-                    st.cache_data.clear()
-                    st.rerun()
+                if multi_tailles and (tailles_input or "").strip():
+                    tailles = [t.strip() for t in tailles_input.split(",") if t.strip()]
+                    if not tailles:
+                        st.error("Indiquez au moins une taille (ex: 43, 44, 45)")
+                    elif len(ref) + 4 > 50:
+                        st.error("Référence trop longue. Utilisez une base courte (ex: CHAU-S3)")
+                    else:
+                        nb_ok = 0
+                        for t in tailles:
+                            ref_t = f"{ref}-{t}"[:50]
+                            nom_t = f"{nom} Taille {t}".strip()
+                            ok, msg = add_article_to_csv(ref_t, nom_t, description, prix, unite)
+                            if ok:
+                                nb_ok += 1
+                        if nb_ok > 0:
+                            st.success(f"✅ {nb_ok} article(s) ajouté(s) : {', '.join(tailles)}")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                elif multi_tailles:
+                    st.error("Indiquez les tailles (ex: 43, 44, 45 ou S, M, L, XL)")
                 else:
-                    st.error(msg)
+                    ok, msg = add_article_to_csv(ref, nom, description, prix, unite)
+                    if ok:
+                        st.success(msg)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     with tabs[2]:   # 🔄 Déplacer
         st.markdown("#### 🔄 Déplacer un article vers une autre catégorie")
