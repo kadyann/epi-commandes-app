@@ -3795,7 +3795,7 @@ def show_admin_articles():
             multi_tailles = st.checkbox("📏 Article avec plusieurs tailles (pointure, S, M, L, XL…)", value=False)
             ref = st.text_input("N° Référence* (court, ex: CHAU-S3)", max_chars=40, help="Max 50 caractères. Pour plusieurs tailles: base sans la taille (ex: CHAU-S3)")
             nom = st.text_input("Nom* (sans la taille)", help="Ex: Chaussure de sécurité S3 bruleur — la taille sera ajoutée automatiquement")
-            tailles_input = st.text_input("Tailles* (séparées par des virgules)", placeholder="43, 44, 45, 46 ou S, M, L, XL, XXL", label_visibility="visible" if multi_tailles else "collapsed") if multi_tailles else ""
+            tailles_input = st.text_input("📏 Tailles (si plusieurs) — ex: 43, 44, 45 ou S, M, L, XL", placeholder="43, 44, 45, 46", help="Remplir uniquement si « Plusieurs tailles » est coché")
             description = st.selectbox("Description* (catégorie)", categories)
             prix = st.number_input("Prix*", min_value=0.0, step=0.01, format="%.2f")
             unite = st.text_input("Unité*", value="Par unité")
