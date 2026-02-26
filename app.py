@@ -662,16 +662,18 @@ def show_ai_suggestions_panel(user_id, current_cart):
 
 # === ANALYTICS AVANCÉS ===
 @st.cache_data(ttl=1800, show_spinner="📊 Génération des analytics avancés...")
-def get_advanced_analytics():
-    """Génère des analytics avancés avec prédictions"""
+def get_advanced_analytics(year=None):
+    """Génère des analytics avancés avec prédictions (filtré par année si précisée)"""
     try:
         if not USE_POSTGRESQL:
             return None
-            
+        
+        year = year or datetime.now().year
+        
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         
-        # Données de base
+        # Données de base (filtrées par année)
         cursor.execute("""
             SELECT 
                 DATE_TRUNC('month', date) as mois,
@@ -681,14 +683,14 @@ def get_advanced_analytics():
                 equipe,
                 contremaître
             FROM commandes 
-            WHERE date >= NOW() - INTERVAL '12 months'
+            WHERE EXTRACT(YEAR FROM date) = %s
             GROUP BY DATE_TRUNC('month', date), equipe, contremaître
             ORDER BY mois DESC
-        """)
+        """, (year,))
         
         monthly_data = cursor.fetchall()
         
-        # Top articles les plus commandés
+        # Top articles (filtré par année)
         cursor.execute("""
             SELECT 
                 articles_json,
@@ -696,17 +698,75 @@ def get_advanced_analytics():
                 total_prix,
                 equipe
             FROM commandes 
-            WHERE date >= NOW() - INTERVAL '6 months'
+            WHERE EXTRACT(YEAR FROM date) = %s
             ORDER BY date DESC
-        """)
+        """, (year,))
         
         orders_data = cursor.fetchall()
+        
+        # Budget par équipe (requête dédiée pour précision)
+        cursor.execute("""
+            SELECT equipe, 
+                   COUNT(*) as nb_commandes, 
+                   SUM(total_prix) as total_value,
+                   AVG(total_prix) as avg_order
+            FROM commandes 
+            WHERE EXTRACT(YEAR FROM date) = %s AND equipe IS NOT NULL
+            GROUP BY equipe
+            ORDER BY total_value DESC
+        """, (year,))
+        team_budget_rows = cursor.fetchall()
+        
+        # Dépenses mensuelles par équipe
+        cursor.execute("""
+            SELECT TO_CHAR(date, 'YYYY-MM') as mois, equipe, SUM(total_prix) as total
+            FROM commandes 
+            WHERE EXTRACT(YEAR FROM date) = %s AND equipe IS NOT NULL
+            GROUP BY TO_CHAR(date, 'YYYY-MM'), equipe
+            ORDER BY mois, equipe
+        """, (year,))
+        monthly_by_team_rows = cursor.fetchall()
+        
+        # Top commandeurs (contremaîtres)
+        cursor.execute("""
+            SELECT contremaître, COUNT(*) as nb_cmd, SUM(total_prix) as total
+            FROM commandes 
+            WHERE EXTRACT(YEAR FROM date) = %s
+            GROUP BY contremaître
+            ORDER BY total DESC
+            LIMIT 10
+        """, (year,))
+        top_commanders = cursor.fetchall()
+        
         conn.close()
+        
+        # Budget par équipe
+        team_performance = {}
+        total_global = 0
+        for row in team_budget_rows:
+            equipe, nb_cmd, total_val, avg_ord = row
+            team = equipe or 'Unknown'
+            total_val = float(total_val or 0)
+            total_global += total_val
+            team_performance[team] = {
+                'orders': int(nb_cmd or 0),
+                'total_value': total_val,
+                'avg_order': float(avg_ord or 0)
+            }
+        for t in team_performance:
+            team_performance[t]['pct_total'] = (team_performance[t]['total_value'] / total_global * 100) if total_global > 0 else 0
+        
+        # Dépenses mensuelles par équipe
+        monthly_by_team = {}
+        for mois, equipe, total in monthly_by_team_rows:
+            team = equipe or 'Unknown'
+            if mois not in monthly_by_team:
+                monthly_by_team[mois] = {}
+            monthly_by_team[mois][team] = float(total or 0)
         
         # Analyse des articles
         article_stats = {}
         monthly_trends = {}
-        team_performance = {}
         
         for order in orders_data:
             if order[0]:  # articles_json
@@ -723,7 +783,6 @@ def get_advanced_analytics():
                             nom = article.get('Nom', 'Unknown')
                             prix = float(article.get('Prix', 0))
                             
-                            # Stats par article
                             if nom not in article_stats:
                                 article_stats[nom] = {
                                     'count': 0,
@@ -731,25 +790,15 @@ def get_advanced_analytics():
                                     'avg_price': 0,
                                     'teams': set()
                                 }
-                            
                             article_stats[nom]['count'] += 1
                             article_stats[nom]['total_value'] += prix
                             article_stats[nom]['teams'].add(team)
                             article_stats[nom]['avg_price'] = article_stats[nom]['total_value'] / article_stats[nom]['count']
                             
-                            # Tendances mensuelles
                             if month_key not in monthly_trends:
                                 monthly_trends[month_key] = {'orders': 0, 'value': 0, 'articles': 0}
                             monthly_trends[month_key]['articles'] += 1
                             monthly_trends[month_key]['value'] += prix
-                    
-                    # Performance par équipe
-                    if team not in team_performance:
-                        team_performance[team] = {'orders': 0, 'total_value': 0, 'avg_order': 0}
-                    team_performance[team]['orders'] += 1
-                    team_performance[team]['total_value'] += order[2] or 0
-                    team_performance[team]['avg_order'] = team_performance[team]['total_value'] / team_performance[team]['orders']
-                    
                 except:
                     continue
         
@@ -782,9 +831,12 @@ def get_advanced_analytics():
             'article_stats': article_stats,
             'monthly_trends': monthly_trends,
             'team_performance': team_performance,
+            'monthly_by_team': monthly_by_team,
+            'top_commanders': top_commanders,
             'predictions': predictions,
             'top_articles': sorted(article_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10],
-            'top_value_articles': sorted(article_stats.items(), key=lambda x: x[1]['total_value'], reverse=True)[:10]
+            'top_value_articles': sorted(article_stats.items(), key=lambda x: x[1]['total_value'], reverse=True)[:10],
+            'year': year
         }
         
     except Exception as e:
@@ -855,44 +907,65 @@ def export_analytics_to_excel(analytics_data):
     """Exporte les analytics vers Excel"""
     try:
         import io
-        from datetime import datetime
         
-        # Créer un buffer en mémoire
+        if not analytics_data:
+            return None
+        
         output = io.BytesIO()
         
-        # Créer un DataFrame avec les données principales
-        if analytics_data and 'top_articles' in analytics_data:
-            # Préparer les données pour Excel
-            excel_data = []
-            for nom, stats in analytics_data['top_articles']:
-                excel_data.append({
-                    'Article': nom,
-                    'Quantité commandée': stats['count'],
-                    'Valeur totale (€)': round(stats['total_value'], 2),
-                    'Prix moyen (€)': round(stats['avg_price'], 2),
-                    'Équipes utilisatrices': len(stats['teams'])
-                })
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Feuille Top Articles (tous les articles triés par quantité)
+            article_stats = analytics_data.get('article_stats', {})
+            top_articles = sorted(article_stats.items(), key=lambda x: x[1]['count'], reverse=True)
+            if top_articles:
+                excel_data = []
+                for nom, stats in top_articles:
+                    excel_data.append({
+                        'Article': str(nom)[:255],
+                        'Quantité commandée': stats['count'],
+                        'Valeur totale (€)': round(stats['total_value'], 2),
+                        'Prix moyen (€)': round(stats['avg_price'], 2),
+                        'Équipes utilisatrices': len(stats.get('teams', set()))
+                    })
+                pd.DataFrame(excel_data).to_excel(writer, sheet_name='Top Articles', index=False)
+            else:
+                pd.DataFrame(columns=['Article', 'Quantité', 'Valeur (€)']).to_excel(writer, sheet_name='Top Articles', index=False)
             
-            df = pd.DataFrame(excel_data)
+            # Feuille Tendances mensuelles
+            monthly_trends = analytics_data.get('monthly_trends', {})
+            if monthly_trends:
+                monthly_df = pd.DataFrame([
+                    {'Mois': month, 'Nb articles': data['articles'], 'Valeur (€)': round(data['value'], 2)}
+                    for month, data in sorted(monthly_trends.items())
+                ])
+                monthly_df.to_excel(writer, sheet_name='Tendances Mensuelles', index=False)
             
-            # Sauvegarder en Excel
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Top Articles', index=False)
-                
-                # Ajouter une feuille avec les tendances mensuelles
-                if 'monthly_trends' in analytics_data:
-                    monthly_df = pd.DataFrame([
-                        {
-                            'Mois': month,
-                            'Nombre d\'articles': data['articles'],
-                            'Valeur totale (€)': round(data['value'], 2)
-                        }
-                        for month, data in analytics_data['monthly_trends'].items()
-                    ])
-                    monthly_df.to_excel(writer, sheet_name='Tendances Mensuelles', index=False)
+            # Feuille Budget par équipe
+            team_perf = analytics_data.get('team_performance', {})
+            if team_perf:
+                team_df = pd.DataFrame([
+                    {
+                        'Équipe': t,
+                        'Budget consommé (€)': round(d['total_value'], 2),
+                        'Nb commandes': d['orders'],
+                        'Moyenne/commande (€)': round(d.get('avg_order', 0), 2),
+                        '% du total': round(d.get('pct_total', 0), 1)
+                    }
+                    for t, d in team_perf.items()
+                ])
+                team_df.to_excel(writer, sheet_name='Budget par Équipe', index=False)
             
-            output.seek(0)
-            return output
+            # Feuille Top commandeurs
+            top_cmd = analytics_data.get('top_commanders', [])
+            if top_cmd:
+                cmd_df = pd.DataFrame([
+                    {'Contremaître': r[0], 'Nb commandes': r[1], 'Total (€)': round(r[2], 2)}
+                    for r in top_cmd
+                ])
+                cmd_df.to_excel(writer, sheet_name='Top Commandeurs', index=False)
+        
+        output.seek(0)
+        return output
     except Exception as e:
         st.error(f"Erreur export Excel: {e}")
         return None
@@ -906,8 +979,21 @@ def show_advanced_analytics():
     st.markdown("# 📊 Dashboard Analytique Avancé")
     st.markdown("*Intelligence d'affaires pour l'optimisation des commandes*")
     
-    # Récupération des données avec cache
-    analytics_data = get_advanced_analytics()
+    # Filtre par année
+    current_year = datetime.now().year
+    available_years = list(range(current_year, current_year - 5, -1))
+    col_filter, _ = st.columns([1, 3])
+    with col_filter:
+        selected_year = st.selectbox(
+            "📅 Année",
+            options=available_years,
+            index=0,
+            key="analytics_year_select"
+        )
+        st.session_state['analytics_year'] = selected_year
+    
+    # Récupération des données avec cache (filtré par année)
+    analytics_data = get_advanced_analytics(selected_year)
     budget_alerts = get_budget_alerts()
     
     if not analytics_data:
@@ -1019,6 +1105,60 @@ def show_advanced_analytics():
             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig_pie, use_container_width=True)
     
+    # === BUDGET CONSOMMÉ PAR ÉQUIPE ===
+    st.markdown("## 💰 Budget consommé par équipe")
+    if analytics_data.get('team_performance'):
+        team_data = []
+        for equipe, d in sorted(analytics_data['team_performance'].items(), key=lambda x: x[1]['total_value'], reverse=True):
+            team_data.append({
+                'Équipe': equipe,
+                'Budget consommé (€)': f"{d['total_value']:,.0f}",
+                'Nb commandes': d['orders'],
+                'Moyenne/commande (€)': f"{d['avg_order']:.0f}",
+                '% du total': f"{d.get('pct_total', 0):.1f}%"
+            })
+        st.dataframe(pd.DataFrame(team_data), use_container_width=True, hide_index=True)
+        
+        # Graphique barres horizontal
+        fig_team = px.bar(
+            x=[d['total_value'] for d in analytics_data['team_performance'].values()],
+            y=list(analytics_data['team_performance'].keys()),
+            orientation='h',
+            title="Budget consommé par équipe (€)",
+            labels={'x': 'Montant (€)', 'y': 'Équipe'},
+            color=[d['total_value'] for d in analytics_data['team_performance'].values()],
+            color_continuous_scale='Teal'
+        )
+        fig_team.update_layout(showlegend=False, height=300)
+        st.plotly_chart(fig_team, use_container_width=True)
+    
+    # === ÉVOLUTION MENSUELLE PAR ÉQUIPE + TOP COMMANDEURS ===
+    col_evo, col_cmd = st.columns(2)
+    with col_evo:
+        st.markdown("### 📅 Évolution mensuelle par équipe")
+        if analytics_data.get('monthly_by_team'):
+            monthly_team = analytics_data['monthly_by_team']
+            months = sorted(monthly_team.keys())
+            teams = set()
+            for m in months:
+                teams.update(monthly_team[m].keys())
+            teams = sorted(teams)
+            if months and teams:
+                fig_evo = go.Figure()
+                for team in teams:
+                    values = [monthly_team.get(m, {}).get(team, 0) for m in months]
+                    fig_evo.add_trace(go.Bar(name=team, x=months, y=values))
+                fig_evo.update_layout(barmode='stack', title="Dépenses mensuelles par équipe (€)", height=350)
+                st.plotly_chart(fig_evo, use_container_width=True)
+    
+    with col_cmd:
+        st.markdown("### 👤 Top commandeurs (contremaîtres)")
+        if analytics_data.get('top_commanders'):
+            cmd_data = [{'Contremaître': r[0] or 'N/A', 'Commandes': r[1], 'Total (€)': f"{r[2]:,.0f}"} for r in analytics_data['top_commanders']]
+            st.dataframe(pd.DataFrame(cmd_data), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Aucune donnée")
+    
     # === TOP ARTICLES AVEC PRÉDICTIONS ===
     st.markdown("### 🔥 Top Articles & Analyse Prédictive")
     
@@ -1089,15 +1229,17 @@ def show_advanced_analytics():
     # === EXPORT ===
     st.markdown("### 📤 Exports")
     
-    if st.button("📊 Export Excel Détaillé", type="primary"):
-        excel_data = export_analytics_to_excel(analytics_data)
-        if excel_data:
-            st.download_button(
-                label="💾 Télécharger Excel",
-                data=excel_data.getvalue(),
-                file_name=f"analytics_flux_para_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    excel_data = export_analytics_to_excel(analytics_data)
+    if excel_data:
+        st.download_button(
+            label="📊 Export Excel Détaillé",
+            data=excel_data.getvalue(),
+            file_name=f"analytics_flux_para_{st.session_state.get('analytics_year', datetime.now().year)}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
+    else:
+        st.caption("Aucune donnée à exporter pour cette période.")
 
 # === FONCTIONS BASE DE DONNÉES ===
 def init_database():
