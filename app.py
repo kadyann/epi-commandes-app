@@ -301,36 +301,54 @@ USE_POSTGRESQL = os.environ.get("USE_POSTGRESQL", "true").lower() in ("1", "true
 # === CHARGEMENT DES DONNÉES ===
 @st.cache_data(ttl=300, show_spinner="🔄 Chargement des articles...")
 def load_articles():
-    """Charge les articles depuis le CSV avec cache intelligent - 5 colonnes strictes"""
+    """Charge les articles depuis PostgreSQL (prod) ou CSV (local)"""
+    if USE_POSTGRESQL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT reference, nom, description, prix, unitee 
+                FROM articles 
+                ORDER BY reference
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+            if not rows:
+                return _load_articles_from_csv_fallback()
+            df = pd.DataFrame(rows, columns=['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée'])
+            df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
+            df = df.dropna(subset=['Prix'])
+            df = df[df['Prix'] >= 0]
+            df['Nom'] = df['Nom'].astype(str).str.strip()
+            df = df[df['Nom'].str.len() >= 1]
+            return df
+        except Exception as e:
+            return _load_articles_from_csv_fallback()
+    
+    return _load_articles_from_csv_fallback()
+
+def _load_articles_from_csv_fallback():
+    """Charge depuis le CSV (local / fallback)"""
     try:
-        # Lecture robuste sans heuristics coûteuses: on lit les 5 premières colonnes au séparateur virgule
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
-        
-        # Nettoyage classique
         df = df.dropna(subset=['Prix'])
         df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
         df = df.dropna(subset=['Prix'])
-        df = df[df['Prix'] >= 0]  # permet les articles à prix 0
-        # Accepter aussi les noms courts (ex: "10")
+        df = df[df['Prix'] >= 0]
         df['Nom'] = df['Nom'].astype(str).str.strip()
         df = df[df['Nom'].str.len() >= 1]
-        
         return df
     except FileNotFoundError:
-        st.error(f"📁 ERREUR: Fichier articles.csv non trouvé à {ARTICLES_CSV_PATH}")
         return create_sample_articles()
     except UnicodeDecodeError:
         try:
             df = pd.read_csv(ARTICLES_CSV_PATH, encoding='latin-1', usecols=[0,1,2,3,4])
             df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
             return df
-        except Exception as e:
-            st.error(f"❌ Erreur lecture latin-1 : {e}")
+        except Exception:
             return create_sample_articles()
-    except Exception as e:
-        st.error(f"❌ Erreur inattendue lors du chargement : {e}")
-        st.error(f"📍 Chemin testé : {ARTICLES_CSV_PATH}")
+    except Exception:
         return create_sample_articles()
 
 def read_csv_safe(filename):
@@ -1142,14 +1160,67 @@ def init_database():
             )
         """)
         
+        # Table catalogue articles (persistance Railway)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS articles (
+                id SERIAL PRIMARY KEY,
+                reference VARCHAR(50) NOT NULL,
+                nom VARCHAR(255) NOT NULL,
+                description VARCHAR(255),
+                prix DECIMAL(10,2) NOT NULL,
+                unitee VARCHAR(50),
+                UNIQUE(reference)
+            )
+        """)
+        
         conn.commit()
         conn.close()
         
         # Appeler la migration des permissions après création de la table
         migrate_database()
+        # Migrer articles CSV -> PostgreSQL si table vide
+        migrate_articles_csv_to_postgres()
         
     except Exception as e:
         st.error(f"Erreur initialisation base: {e}")
+
+def migrate_articles_csv_to_postgres():
+    """Migre les articles du CSV vers PostgreSQL si la table est vide (1ère fois)"""
+    if not USE_POSTGRESQL:
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM articles")
+        count = cursor.fetchone()[0]
+        if count > 0:
+            conn.close()
+            return  # Déjà migré
+        if not os.path.isfile(ARTICLES_CSV_PATH):
+            conn.close()
+            return
+        df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0, 1, 2, 3, 4])
+        df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+        df = df.dropna(subset=['Prix'])
+        df['Prix'] = pd.to_numeric(df['Prix'], errors='coerce')
+        df = df.dropna(subset=['Prix'])
+        for _, row in df.iterrows():
+            try:
+                ref = str(row['N° Référence'])
+                nom = str(row['Nom'])
+                desc = str(row.get('Description', '') or '')
+                prix = float(row['Prix'])
+                unitee = str(row.get('Unitée', 'Par unité') or 'Par unité')
+                cursor.execute(
+                    "INSERT INTO articles (reference, nom, description, prix, unitee) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (reference) DO NOTHING",
+                    (ref, nom, desc, prix, unitee)
+                )
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 def save_commande_to_db(commande_data):
     """Sauvegarde une commande en base de données"""
@@ -3790,9 +3861,38 @@ def show_admin_articles():
 
 def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs):
     """
-    Ajoute une ligne au fichier articles.csv (5 colonnes strictes, ignore tout champ en trop).
+    Ajoute un article au catalogue : PostgreSQL (prod) ou CSV (local).
     Retourne (success, message).
     """
+    try:
+        prix_val = float(prix) if prix is not None else 0.0
+    except (TypeError, ValueError):
+        prix_val = 0.0
+    
+    if USE_POSTGRESQL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO articles (reference, nom, description, prix, unitee)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (reference) DO UPDATE SET
+                    nom = EXCLUDED.nom,
+                    description = EXCLUDED.description,
+                    prix = EXCLUDED.prix,
+                    unitee = EXCLUDED.unitee
+            """, (str(reference), str(nom), str(description or ''), prix_val, str(unite or 'Par unité')))
+            conn.commit()
+            conn.close()
+            try:
+                load_articles.clear()
+            except Exception:
+                pass
+            st.cache_data.clear()
+            return True, "✅ Article ajouté au catalogue"
+        except Exception as e:
+            return False, f"❌ Erreur ajout article : {e}"
+    
     try:
         file_path = ARTICLES_CSV_PATH
         header = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
@@ -3801,12 +3901,7 @@ def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(header)
-            # On n'enregistre que les 5 premiers champs, même si d'autres sont passés
-            try:
-                prix_str = f"{float(prix):.2f}"
-            except Exception:
-                prix_str = str(prix)
-            writer.writerow([str(reference), str(nom), str(description), prix_str, str(unite)])
+            writer.writerow([str(reference), str(nom), str(description or ''), f"{prix_val:.2f}", str(unite or 'Par unité')])
         try:
             load_articles.clear()
         except Exception:
@@ -3817,31 +3912,55 @@ def add_article_to_csv(reference, nom, description, prix, unite, *args, **kwargs
         return False, f"❌ Erreur ajout article : {e}"
 
 def import_articles_from_csv(new_articles_df):
-    """Importe plusieurs articles depuis un DataFrame"""
+    """Importe plusieurs articles depuis un DataFrame (PostgreSQL ou CSV)"""
     try:
         global articles_df
+        cols = list(new_articles_df.columns)
         
-        # Charger le CSV actuel
-        try:
-            df_actuel = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
-        except FileNotFoundError:
-            df_actuel = pd.DataFrame(columns=['Référence', 'Nom', 'Prix', 'Catégorie', 'Description'])
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            for _, row in new_articles_df.iterrows():
+                try:
+                    ref = str(row[cols[0]]) if len(cols) > 0 and pd.notna(row[cols[0]]) else ''
+                    nom = str(row[cols[1]]) if len(cols) > 1 and pd.notna(row[cols[1]]) else ''
+                    desc = str(row[cols[2]]) if len(cols) > 2 and pd.notna(row[cols[2]]) else ''
+                    prix = float(row[cols[3]]) if len(cols) > 3 and pd.notna(row[cols[3]]) else 0.0
+                    unitee = str(row[cols[4]]) if len(cols) > 4 and pd.notna(row[cols[4]]) else 'Par unité'
+                    if ref and nom:
+                        cursor.execute("""
+                            INSERT INTO articles (reference, nom, description, prix, unitee)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (reference) DO UPDATE SET
+                                nom = EXCLUDED.nom, description = EXCLUDED.description,
+                                prix = EXCLUDED.prix, unitee = EXCLUDED.unitee
+                        """, (ref, nom, desc, prix, unitee))
+                except Exception:
+                    pass
+            conn.commit()
+            conn.close()
+        else:
+            try:
+                df_actuel = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
+                df_actuel.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+            except FileNotFoundError:
+                df_actuel = pd.DataFrame(columns=['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée'])
+            if len(new_articles_df.columns) >= 5:
+                df_import = new_articles_df.iloc[:, :5].copy()
+                df_import.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
+            else:
+                df_import = new_articles_df.copy()
+            df_combine = pd.concat([df_actuel, df_import], ignore_index=True)
+            df_combine = df_combine.drop_duplicates(subset=['N° Référence'], keep='last')
+            df_combine.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
         
-        # Fusionner les DataFrames
-        df_combine = pd.concat([df_actuel, new_articles_df], ignore_index=True)
-        
-        # Supprimer les doublons basés sur la référence
-        df_combine = df_combine.drop_duplicates(subset=['Référence'], keep='last')
-        
-        # Sauvegarder
-        df_combine.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
-        
-        # Recharger le cache
         st.cache_data.clear()
+        try:
+            load_articles.clear()
+        except Exception:
+            pass
         articles_df = load_articles()
-        
         return True
-        
     except Exception as e:
         st.error(f"Erreur import articles: {e}")
         return False
@@ -3980,6 +4099,30 @@ def show_user_management():
                             
     except Exception as e:
         st.error(f"Erreur chargement utilisateurs: {e}")
+
+def send_email_notification(to_email, subject, body):
+    """Envoie un email de notification (SMTP configuré via variables d'environnement)"""
+    try:
+        smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+        sender_email = os.environ.get("SMTP_USER", "")
+        sender_password = os.environ.get("SMTP_PASSWORD", "")
+        if not sender_email or not sender_password:
+            return True  # Pas de crash si SMTP non configuré
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, to_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        st.warning(f"Email non envoyé ({to_email}): {e}")
+        return False
 
 def send_password_reset_email(email, new_password):
     """Envoie un email avec le nouveau mot de passe"""
@@ -4839,7 +4982,7 @@ def show_validation_page():
             
             with col2:
                 if st.button(f"✅ Valider", key=f"approve_{order_id}", use_container_width=True):
-                    approve_order(order_id, contremaitre)
+                    approve_order(order_id, contremaitre, equipe, total_prix)
                     st.success("✅ Commande validée !")
                     st.rerun()
             
@@ -4883,7 +5026,7 @@ def send_approval_email(order_id, contremaitre, equipe, total_prix, articles_cou
         st.error(f"Erreur envoi email: {e}")
         return False
 
-def approve_order(order_id, contremaitre):
+def approve_order(order_id, contremaitre, equipe=None, total_prix=None):
     """Valide une commande"""
     try:
         if USE_POSTGRESQL:
@@ -4910,7 +5053,7 @@ def approve_order(order_id, contremaitre):
         send_approval_notification(contremaitre, order_id, "validée")
         
         # Notifier le technicien Denis Busoni
-        send_technician_notification("denis.busoni@arcelormittal.com", order_id, contremaitre, equipe, total_prix)
+        send_technician_notification("denis.busoni@arcelormittal.com", order_id, contremaitre, equipe or "N/A", total_prix or 0)
         
         return True
         
@@ -5652,7 +5795,26 @@ def ensure_users_table():
 
 # --- GESTION DES ARTICLES : SUPPRESSION ---------------------------------
 def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, str]:
-    """Supprime un article (référence) du fichier CSV puis invalide le cache."""
+    """Supprime un article (référence) du catalogue (PostgreSQL ou CSV)."""
+    if USE_POSTGRESQL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM articles WHERE reference = %s", (str(reference),))
+            if not cursor.fetchone():
+                conn.close()
+                return False, "Référence introuvable"
+            cursor.execute("DELETE FROM articles WHERE reference = %s", (str(reference),))
+            conn.commit()
+            conn.close()
+            try:
+                load_articles.clear()
+            except Exception:
+                pass
+            st.cache_data.clear()
+            return True, "✅ Article supprimé avec succès"
+        except Exception as e:
+            return False, f"❌ Erreur suppression article : {e}"
     try:
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
@@ -5661,7 +5823,6 @@ def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, st
             return False, "Référence introuvable"
         df = df[df[ref_col].astype(str) != str(reference)]
         df.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
-        # Purger le cache pour recharger immédiatement
         try:
             load_articles.clear()
         except Exception:
@@ -5672,34 +5833,44 @@ def delete_article(reference: str, ref_col: str | None = None) -> tuple[bool, st
         return False, f"❌ Erreur suppression article : {e}"
 
 def move_article_category(reference: str, new_category: str) -> tuple[bool, str]:
-    """Déplace un article vers une nouvelle catégorie."""
+    """Déplace un article vers une nouvelle catégorie (description)."""
+    if USE_POSTGRESQL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT description FROM articles WHERE reference = %s", (str(reference),))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False, "Référence introuvable"
+            old_category = row[0] or ""
+            cursor.execute("UPDATE articles SET description = %s WHERE reference = %s", (new_category, str(reference)))
+            conn.commit()
+            conn.close()
+            try:
+                load_articles.clear()
+            except Exception:
+                pass
+            st.cache_data.clear()
+            return True, f"✅ Article déplacé de '{old_category}' vers '{new_category}'"
+        except Exception as e:
+            return False, f"❌ Erreur déplacement : {e}"
     try:
         df = pd.read_csv(ARTICLES_CSV_PATH, encoding='utf-8', usecols=[0,1,2,3,4])
         df.columns = ['N° Référence', 'Nom', 'Description', 'Prix', 'Unitée']
-        
         ref_col = get_ref_col(df)
-        
-        # Vérifier que l'article existe
         if reference not in df[ref_col].astype(str).values:
             return False, "Référence introuvable"
-        
-        # Mettre à jour la catégorie
         mask = df[ref_col].astype(str) == str(reference)
         old_category = df.loc[mask, 'Description'].iloc[0]
         df.loc[mask, 'Description'] = new_category
-        
-        # Sauvegarder
         df.to_csv(ARTICLES_CSV_PATH, index=False, encoding='utf-8')
-        
-        # Purger le cache
         try:
             load_articles.clear()
         except Exception:
             pass
         st.cache_data.clear()
-        
         return True, f"✅ Article déplacé de '{old_category}' vers '{new_category}'"
-        
     except Exception as e:
         return False, f"❌ Erreur déplacement : {e}"
 
