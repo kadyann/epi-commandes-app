@@ -285,7 +285,12 @@ st.markdown("""
 MAX_CART_AMOUNT = 1500.0  # Budget maximum par commande
 
 # Configuration base de données
-DATABASE_URL = "postgresql://postgres:XmqANsOjbMMrtzLvkoDhRueHSTUpocsQ@gondola.proxy.rlwy.net:15641/railway"
+# Utiliser DATABASE_URL de Railway (variable d'environnement) pour éviter les erreurs 502
+# Railway fournit cette variable automatiquement quand Postgres est lié au service
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:XmqANsOjbMMrtzLvkoDhRueHSTUpocsQ@gondola.proxy.rlwy.net:15641/railway")
+# Railway fournit postgres://, psycopg2 accepte postgresql://
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 # Chemin absolu du CSV des articles (évite les erreurs de répertoire courant)
 ARTICLES_CSV_PATH = os.path.join(os.path.dirname(__file__), 'articles.csv')
 # Fichier SQLite local (fallback)
