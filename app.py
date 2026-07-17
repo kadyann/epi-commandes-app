@@ -549,14 +549,20 @@ def get_ai_suggestions_for_user(user_id, current_cart=None):
         
         # Générer les suggestions (exclure les articles déjà dans le panier)
         suggestions = []
+        seen_references = set()
         articles_df = load_articles()
         
         for nom, freq in sorted(article_frequency.items(), key=lambda x: x[1], reverse=True)[:10]:
             if nom not in current_cart_items:
                 # Trouver l'article dans le catalogue
-                matching_articles = articles_df[articles_df['Nom'].str.contains(nom, case=False, na=False)]
+                matching_articles = articles_df[articles_df['Nom'].str.contains(nom, case=False, na=False, regex=False)]
                 if not matching_articles.empty:
                     article = matching_articles.iloc[0].to_dict()
+                    # Éviter les doublons: plusieurs noms proches peuvent matcher le même article
+                    ref = str(article.get('N° Référence', '')) or article.get('Nom', '')
+                    if ref in seen_references:
+                        continue
+                    seen_references.add(ref)
                     suggestions.append({
                         'article': article,
                         'score': freq,
@@ -633,7 +639,7 @@ def show_ai_suggestions_panel(user_id, current_cart):
         st.markdown('<div class="ai-suggestions">', unsafe_allow_html=True)
         st.markdown("### 🤖 Suggestions IA pour vous")
         
-        for suggestion in suggestions:
+        for idx, suggestion in enumerate(suggestions):
             article = suggestion['article']
             reason = suggestion['reason']
             score = suggestion['score']
@@ -650,7 +656,7 @@ def show_ai_suggestions_panel(user_id, current_cart):
                 """, unsafe_allow_html=True)
             
             with col2:
-                if st.button("➕", key=f"ai_add_{article.get('N° Référence', '')}", 
+                if st.button("➕", key=f"ai_add_{idx}_{article.get('N° Référence', '')}", 
                            help=f"Ajouter {article.get('Nom', '')} au panier"):
                     add_to_cart(article)
                     st.success(f"✅ {article.get('Nom', '')[:30]} ajouté!")
@@ -1298,7 +1304,7 @@ def init_database():
                 session_token VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+                expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '60 minutes')
             )
         """)
         
@@ -1564,14 +1570,18 @@ migrate_add_commande_tracking()
 def init_users_db():
     """Initialise l'utilisateur admin par défaut"""
     try:
-        admin_password = hashlib.sha256("admin123".encode()).hexdigest()
+        # Le mot de passe admin vient de la variable d'environnement ADMIN_PASSWORD
+        # (à définir dans Railway). Le fallback "admin123" ne sert qu'en local.
+        admin_env_password = os.environ.get("ADMIN_PASSWORD", "")
+        admin_password = hashlib.sha256((admin_env_password or "admin123").encode()).hexdigest()
         
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         
         # Vérifier si admin existe
-        cursor.execute("SELECT id FROM users WHERE username = %s", ("admin",))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, password_hash FROM users WHERE username = %s", ("admin",))
+        admin_row = cursor.fetchone()
+        if not admin_row:
             # Créer l'admin
             cursor.execute("""
                 INSERT INTO users (username, password_hash, role, equipe, fonction, 
@@ -1580,6 +1590,10 @@ def init_users_db():
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, ("admin", admin_password, "admin", "DIRECTION", "Administrateur", 
                   "DT770", True, True, True, True, True))
+        elif admin_env_password and admin_row[1] != admin_password:
+            # Synchroniser le hash avec ADMIN_PASSWORD si elle a changé
+            cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s",
+                           (admin_password, "admin"))
         
         conn.commit()
         conn.close()
@@ -1637,10 +1651,10 @@ def create_session_token(user_id):
             cursor = conn.cursor()
             # Supprimer les anciennes sessions de cet utilisateur
             cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
-            # Créer une nouvelle session avec expiration 5 minutes
+            # Créer une nouvelle session avec expiration 60 minutes
             cursor.execute("""
                 INSERT INTO user_sessions (user_id, session_token, expires_at) 
-                VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+                VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '60 minutes')
             """, (user_id, token))
             conn.commit()
             conn.close()
@@ -1663,11 +1677,11 @@ def validate_session_token(user_id, token):
             result = cursor.fetchone()
             
             if result:
-                # Prolonger la session de 5 minutes
+                # Prolonger la session de 60 minutes
                 cursor.execute("""
                     UPDATE user_sessions 
                     SET last_activity = CURRENT_TIMESTAMP, 
-                        expires_at = CURRENT_TIMESTAMP + INTERVAL '5 minutes'
+                        expires_at = CURRENT_TIMESTAMP + INTERVAL '60 minutes'
                     WHERE user_id = %s AND session_token = %s
                 """, (user_id, token))
                 conn.commit()
@@ -1813,6 +1827,52 @@ def calculate_cart_total():
     """Calcule le total du panier en normalisant la structure si besoin."""
     ensure_cart_normalized()
     return sum(float(item.get('Prix', 0)) for item in st.session_state.cart if isinstance(item, dict))
+
+def get_last_order_articles(username):
+    """Récupère les articles de la dernière commande de l'utilisateur"""
+    try:
+        if USE_POSTGRESQL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT articles_json FROM commandes 
+                WHERE contremaître = %s 
+                ORDER BY date DESC LIMIT 1
+            """, (username,))
+        else:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT articles_json FROM commandes 
+                WHERE contremaître = ? 
+                ORDER BY date DESC LIMIT 1
+            """, (username,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return None
+        articles = json.loads(row[0])
+        return articles if isinstance(articles, list) else [articles]
+    except Exception:
+        return None
+
+def repeat_last_order():
+    """Remplit le panier avec la dernière commande de l'utilisateur. Retourne (success, nb_articles, message)"""
+    user = st.session_state.get('current_user', {})
+    username = user.get('username')
+    if not username:
+        return False, 0, "Non connecté"
+    articles = get_last_order_articles(username)
+    if not articles:
+        return False, 0, "Aucune commande précédente"
+    nb_added = 0
+    for art in articles:
+        if isinstance(art, dict) and art.get('Nom'):
+            if add_to_cart(art, 1):
+                nb_added += 1
+            else:
+                break  # Budget dépassé
+    return True, nb_added, f"{nb_added} article(s) ajouté(s) au panier"
 
 def add_to_cart(article, quantity=1):
     """Ajoute un article au panier avec vérification du budget"""
@@ -3613,6 +3673,16 @@ def render_mobile_navigation():
             if st.button("🛡️ Catalogue", key="mobile_catalogue", use_container_width=True):
                 st.session_state.page = "catalogue"
                 st.rerun()
+            if st.button("⚡ Commande rapide", key="mobile_commande_rapide", use_container_width=True):
+                ok, nb, msg = repeat_last_order()
+                if ok and nb > 0:
+                    st.toast(f"⚡ {msg} !", icon="✅")
+                    st.session_state.page = "cart"
+                    st.rerun()
+                elif ok and nb == 0:
+                    st.warning("Aucun article ajouté (budget dépassé ?)")
+                else:
+                    st.info("📭 " + msg)
             if st.button("📊 Mes commandes", key="mobile_mes_commandes", use_container_width=True):
                 st.session_state.page = "mes_commandes"
                 st.rerun()
@@ -3685,6 +3755,7 @@ def render_navigation():
     user_info = st.session_state.get('current_user', {})
     buttons = [
         ("🛡️ Catalogue", "catalogue"),
+        ("⚡ Commande rapide", "commande_rapide"),
         ("🛒 Panier", "cart"),
         ("📊 Mes commandes", "mes_commandes")
     ]
@@ -3701,7 +3772,18 @@ def render_navigation():
     cols = st.columns(len(buttons))
     for i, (label, page) in enumerate(buttons):
         with cols[i]:
-            if page == "logout":
+            if page == "commande_rapide":
+                if st.button(label, use_container_width=True, type="primary"):
+                    ok, nb, msg = repeat_last_order()
+                    if ok and nb > 0:
+                        st.toast(f"⚡ {msg} !", icon="✅")
+                        st.session_state.page = "cart"
+                        st.rerun()
+                    elif ok and nb == 0:
+                        st.warning("Aucun article ajouté (budget dépassé ?)")
+                    else:
+                        st.info("📭 " + msg)
+            elif page == "logout":
                 if st.button(label, use_container_width=True):
                     # SÉCURITÉ : Nettoyage complet des sessions
                     user_id = st.session_state.get('current_user', {}).get('id')
