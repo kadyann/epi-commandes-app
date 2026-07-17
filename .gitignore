@@ -1,0 +1,11 @@
+# Bases de données locales (contiennent des données sensibles)
+*.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Environnement
+.env
+venv/
+.venv/
